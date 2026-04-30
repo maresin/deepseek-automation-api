@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Compiled output
+dist/
+out/
+
+# Playwright browsers (large)
+browsers/
+
+# Session and key files
+state.json
+state_*.json
+.api-key*
+.deepseek-creds.json
+context_stats.json
+
+# Uploaded temporary files
+uploads/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
+# Other
+.ARCHIVE
+collect.js
+directory_structure.txt
+garri_potter_i_tajjnaya_komnata_484_823.txt
+get_tree.py
+large_text.txt
+project_snapshot.txt
+
+
+
+
+

@@ -1,0 +1,5 @@
+Continue the previous task. Here is the context snapshot of our work so far:
+
+%s
+
+Please proceed from where we left off, maintaining all previous decisions and context.

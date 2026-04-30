@@ -17,5 +17,5 @@
     "typeRoots": ["./node_modules/@types"]
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "browsers"]
+  "exclude": ["node_modules", "dist", "browsers", "server-modules/**/*", "*.js"]
 }

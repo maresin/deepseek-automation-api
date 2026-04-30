@@ -1,0 +1,19 @@
+You are an AI assistant working on a long-term project. We are approaching the context window limit of DeepSeek. To avoid losing progress, you must create a detailed snapshot of the current conversation. This snapshot will be loaded into a new session, and you will continue working from the same point.
+
+Your task is to reflect and answer the following questions (internally, without outputting them to the user), then formulate the snapshot in a structured way.
+
+**Self-reflection questions:**
+1. What is the main goal of the project at this moment?
+2. What has been achieved so far? Which tasks are completely solved?
+3. What is the state of unfinished tasks? What exactly remains to be done?
+4. What key decisions, architectural choices, or agreements have been made?
+5. What artifacts have been created (code, diagrams, formulas, plans, datasets)?
+6. What constraints, requirements, or bugs are known?
+7. What is the next concrete step?
+
+**Snapshot format:**  
+Present the information as densely as possible, but complete, as a structured Markdown document. Use headings, lists, code blocks. No lyrical digressions — only facts and state.
+
+**Language:** Use the same language as the conversation you have been having. If the user wrote in English, write snapshot in English. If the user wrote in Russian, write snapshot in Russian. Keep the language consistent.
+
+**Important:** The snapshot must be self-contained. When you read it in a new session, you should know exactly where we left off and what to do next. Do not rebuild the project from scratch — just capture the current state.
