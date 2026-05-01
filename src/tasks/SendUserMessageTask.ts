@@ -35,12 +35,8 @@ export class SendUserMessageTask extends Task<string> {
         } catch (err) {
             if (err instanceof NeedTransitionError) {
                 console.log('🔄 File upload requires transition – performing sync transition and retry...');
-                // Выполняем переход синхронно (без очереди)
                 await this.performTransition(client);
-                // После перехода повторяем отправку (рекурсивный вызов, но с ясным условием выхода)
-                // Убираем файл из параметров? Он уже скопирован в uploads, тот же путь.
-                // Повторяем вызов execute, но с флагом, чтобы избежать бесконечной рекурсии
-                // Для простоты используем retryCount (maxRetries=1)
+                // После перехода повторяем отправку (рекурсивный вызов)
                 return await this.execute(client);
             }
             throw err;
@@ -69,10 +65,13 @@ export class SendUserMessageTask extends Task<string> {
             console.warn('⚠️ Snapshot prompt not found, skipping snapshot creation');
         }
 
-        // 2. Создаём новый чат (очищает uploads, сбрасывает контекст)
-        await client.newChat({ skipSystemPrompt: true });
+        // 2. Создаём новый чат вручную (без очистки папки uploads)
+        await client.chatController.newChat();
+        client.setChatStarted(false);
+        client.setSystemPromptSent(false);
+        await client.contextManager.resetContext(); // сбрасываем счётчик, но не удаляем snapshot-файлы
 
-        // 3. Если есть снимок, восстанавливаем его
+        // 3. Восстанавливаем снимок (если есть)
         const savedSnapshot = await client.contextManager.getSnapshot();
         if (savedSnapshot && savedSnapshot.length > 0) {
             console.log(`📤 Restoring snapshot (${savedSnapshot.length} chars) in new chat...`);
@@ -82,7 +81,6 @@ export class SendUserMessageTask extends Task<string> {
             console.warn('⚠️ No snapshot to restore');
         }
 
-        // Системный промпт отправится при следующем execute (в рекурсивном вызове)
         console.log('✅ Sync transition completed, retrying original request');
     }
 }

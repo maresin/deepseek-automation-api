@@ -10,23 +10,20 @@ export class NewChatTask extends Task<void> {
     }
 
     async execute(client: DeepSeekClient): Promise<void> {
-        // Удаляем все временные файлы в папке uploads
+        // Очистка папки uploads
         const uploadsDir = path.join(process.cwd(), 'uploads');
         if (fs.existsSync(uploadsDir)) {
             const files = fs.readdirSync(uploadsDir);
             for (const file of files) {
-                const filePath = path.join(uploadsDir, file);
                 try {
-                    fs.unlinkSync(filePath);
-                } catch (e) { console.warn(`Failed to delete ${filePath}:`, e); }
+                    fs.unlinkSync(path.join(uploadsDir, file));
+                } catch (e) {}
             }
             console.log(`🧹 Cleaned uploads folder (${files.length} files)`);
         }
-
-        // Полная очистка контекстных данных (счётчик, снимки)
+        // Полная очистка контекстных данных
         await client.contextManager.clearAllContextData();
 
-        // Создаём новый чат в браузере
         await client.chatController.newChat();
         client.setChatStarted(false);
         client.setSystemPromptSent(false);

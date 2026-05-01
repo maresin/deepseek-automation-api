@@ -15,6 +15,7 @@ state_*.json
 .api-key*
 .deepseek-creds.json
 context_stats.json
+context_snapshot.json
 
 # Uploaded temporary files
 uploads/
