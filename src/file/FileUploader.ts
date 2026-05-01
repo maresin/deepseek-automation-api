@@ -1,6 +1,14 @@
+// src/file/FileUploader.ts
 import fs from 'fs';
 import { ChatController } from '../chat/ChatController.js';
 import { ContextManager } from '../context/ContextManager.js';
+
+export class NeedTransitionError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'NeedTransitionError';
+    }
+}
 
 export class FileUploader {
     constructor(
@@ -23,7 +31,7 @@ export class FileUploader {
         const fileSizeChars = this.getFileSizeInChars(filePath);
         const can = await this.contextManager.canUploadFile(fileSizeChars);
         if (!can) {
-            throw new Error(`File too large: ${fileSizeChars} chars, context limit ${this.contextManager['maxChars']} chars`);
+            throw new NeedTransitionError(`File too large for current context, need transition`);
         }
         console.log(`📎 File size: ${fileSizeChars} chars`);
         const statsBefore = await this.contextManager.getStats();
