@@ -1,4 +1,6 @@
 // src/DeepSeekClient.ts
+import fs from 'fs';
+import path from 'path';
 import { BrowserManager } from './browser/BrowserManager.js';
 import { AuthManager } from './auth/AuthManager.js';
 import { ChatController } from './chat/ChatController.js';
@@ -7,7 +9,7 @@ import { FeatureToggles } from './features/FeatureToggles.js';
 import { FileUploader } from './file/FileUploader.js';
 import { ContextManager } from './context/ContextManager.js';
 import { SessionRestorer } from './chat/SessionRestorer.js';
-import { ActionQueue } from './actions/ActionQueue.js'; // может быть удалён позже, пока оставим
+import { ActionQueue } from './actions/ActionQueue.js';
 import { DeepSeekFeatures, DeepSeekResponse, SendMessageOptions } from './types.js';
 import { Selectors } from './browser/Selectors.js';
 import { TaskQueue } from './task/TaskQueue.js';
@@ -84,6 +86,9 @@ export class DeepSeekClient {
     }
 
     async newChat(options: { expertMode?: boolean; restore?: boolean; skipSystemPrompt?: boolean } = {}): Promise<void> {
+        // Очищаем временные данные перед созданием нового чата
+        await this.clearSessionData();
+
         await this.chatController.newChat();
         this.chatStarted = false;
         this.systemPromptSentFlag = false;
@@ -194,10 +199,42 @@ export class DeepSeekClient {
         return await this.sessionRestorer.restoreLastChat();
     }
 
+    private async clearSessionData(): Promise<void> {
+        // Удаляем временные файлы из uploads
+        const uploadsDir = path.join(process.cwd(), 'uploads');
+        if (fs.existsSync(uploadsDir)) {
+            const files = fs.readdirSync(uploadsDir);
+            for (const file of files) {
+                try {
+                    fs.unlinkSync(path.join(uploadsDir, file));
+                } catch (e) {}
+            }
+            console.log(`🧹 Cleaned uploads folder (${files.length} files)`);
+        }
+        // Сбрасываем контекст (счётчик, снимки)
+        await this.contextManager.resetContext();
+    }
+
     private async loadState(): Promise<any> {
         const statePath = this.config.statePath || './state.json';
         return await this.browserManager.loadState(statePath);
     }
+
+        async cleanup(): Promise<void> {
+            console.log('🧹 Cleaning up temporary files and context data...');
+            // Очищаем папку uploads
+            const uploadsDir = path.join(process.cwd(), 'uploads');
+            if (fs.existsSync(uploadsDir)) {
+                const files = fs.readdirSync(uploadsDir);
+                for (const file of files) {
+                    try {
+                        fs.unlinkSync(path.join(uploadsDir, file));
+                    } catch (e) {}
+                }
+            }
+            // Очищаем контекстные данные
+            await this.contextManager.clearAllContextData();
+        }
 
     async close(): Promise<void> {
         await this.browserManager.close();

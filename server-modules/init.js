@@ -9,10 +9,11 @@ async function initFromExistingFiles() {
         console.log('📂 Found existing session files. Attempting to restore...');
         const apiKey = getApiKey();
         const systemPrompt = getSystemPrompt();
-        const config = getClientConfig({ systemPrompt, restoreSession: true }); // восстановление сессии
+        // ❌ Убрано принудительное restoreSession: true
+        const config = getClientConfig({ systemPrompt });
         const newClient = new DeepSeekClient(config);
         try {
-            await newClient.initialize(); // внутри сам восстановит чат и отправит системный промпт
+            await newClient.initialize(); // внутри сам использует config.restoreSession из .env
             setClientAndScheduler(newClient, null);
             console.log(`✅ Session restored. API key: ${apiKey}`);
         } catch (err) {

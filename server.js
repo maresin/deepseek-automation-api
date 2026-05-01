@@ -71,7 +71,10 @@ process.on('SIGINT', async () => {
     console.log('\n🧹 Shutting down...');
     const { getClient } = require('./server-modules/state');
     const client = getClient();
-    if (client) await client.close();
+    if (client) {
+        await client.cleanup();
+        await client.close();
+    }
     process.exit(0);
 });
 
@@ -90,7 +93,10 @@ process.on('SIGTERM', async () => {
     console.log('\n🧹 Shutting down (SIGTERM)...');
     const { getClient } = require('./server-modules/state');
     const client = getClient();
-    if (client) await client.close();
+    if (client) {
+        await client.cleanup();
+        await client.close();
+    }
     process.exit(0);
 });
 
