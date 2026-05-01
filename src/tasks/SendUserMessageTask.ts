@@ -12,11 +12,10 @@ export class SendUserMessageTask extends Task<string> {
     ) {
         const desc = filePath ? `Send message with file ${filePath}` : `Send message: ${text.substring(0, 50)}`;
         super(desc, 'normal');
-        this.maxRetries = 1; // один повтор в случае перехода
+        this.maxRetries = 1;
     }
 
     async execute(client: DeepSeekClient): Promise<string> {
-        // Системный промпт, если ещё не отправлен
         if (!client.isSystemPromptSent() && client.getSystemPromptText()) {
             console.log('📌 Sending system prompt before user message...');
             const systemPromptText = client.getSystemPromptText()!;
@@ -36,7 +35,6 @@ export class SendUserMessageTask extends Task<string> {
             if (err instanceof NeedTransitionError) {
                 console.log('🔄 File upload requires transition – performing sync transition and retry...');
                 await this.performTransition(client);
-                // После перехода повторяем отправку (рекурсивный вызов)
                 return await this.execute(client);
             }
             throw err;
@@ -46,39 +44,49 @@ export class SendUserMessageTask extends Task<string> {
     private async performTransition(client: DeepSeekClient): Promise<void> {
         console.log('🔄 Starting transition to new chat due to large file...');
 
-        // 1. Создаём снимок (если есть промпт)
+        // 1. Создаём снимок (текст)
         const snapshotPromptPath = path.join(process.cwd(), 'prompts', 'snapshot_prompt.txt');
-        let snapshot = '';
-        if (fs.existsSync(snapshotPromptPath)) {
-            const snapshotPrompt = fs.readFileSync(snapshotPromptPath, 'utf-8');
-            console.log('📸 Creating context snapshot...');
-            const wasDeepThink = await client.featureToggles.isDeepThinkEnabled();
-            if (!wasDeepThink) await client.featureToggles.setDeepThink(true);
-            snapshot = await client.executePipeline({ text: snapshotPrompt });
-            if (!wasDeepThink) await client.featureToggles.setDeepThink(false);
-            if (snapshot && snapshot.length > 0) {
-                const currentPercent = Math.round(client.contextManager['totalChars'] / client.contextManager['maxChars'] * 100);
-                client.contextManager['saveSnapshot'](snapshot, currentPercent);
-                console.log(`💾 Snapshot saved (${snapshot.length} chars)`);
-            }
-        } else {
-            console.warn('⚠️ Snapshot prompt not found, skipping snapshot creation');
+        if (!fs.existsSync(snapshotPromptPath)) {
+            throw new Error('Snapshot prompt file not found, cannot perform transition');
         }
+        const snapshotPrompt = fs.readFileSync(snapshotPromptPath, 'utf-8');
+        console.log('📸 Creating context snapshot...');
+        const wasDeepThink = await client.featureToggles.isDeepThinkEnabled();
+        if (!wasDeepThink) await client.featureToggles.setDeepThink(true);
+        const snapshotContent = await client.executePipeline({ text: snapshotPrompt });
+        if (!wasDeepThink) await client.featureToggles.setDeepThink(false);
+        if (!snapshotContent || snapshotContent.trim().length === 0) {
+            throw new Error('Failed to create snapshot: empty response');
+        }
+        // Сохраняем снимок в файл
+        const snapshotFileName = `snapshot_${Date.now()}.txt`;
+        const snapshotFilePath = path.join(process.cwd(), 'uploads', snapshotFileName);
+        fs.writeFileSync(snapshotFilePath, snapshotContent, 'utf-8');
+        console.log(`💾 Snapshot saved to file: ${snapshotFilePath} (${snapshotContent.length} chars)`);
 
-        // 2. Создаём новый чат вручную (без очистки папки uploads)
+        // 2. Создаём новый чат вручную (без очистки uploads)
         await client.chatController.newChat();
         client.setChatStarted(false);
         client.setSystemPromptSent(false);
-        await client.contextManager.resetContext(); // сбрасываем счётчик, но не удаляем snapshot-файлы
+        await client.contextManager.resetContext();
 
-        // 3. Восстанавливаем снимок (если есть)
-        const savedSnapshot = await client.contextManager.getSnapshot();
-        if (savedSnapshot && savedSnapshot.length > 0) {
-            console.log(`📤 Restoring snapshot (${savedSnapshot.length} chars) in new chat...`);
-            await client.executePipeline({ text: savedSnapshot });
-            await client.contextManager.resetContext(savedSnapshot);
+        // 3. Читаем промпт для загрузки снимка
+        const uploadPromptPath = path.join(process.cwd(), 'prompts', 'snapshot_upload_prompt.txt');
+        let uploadPrompt = "Here is the context snapshot of our previous session (attached file). Please accept it and confirm by replying 'OK'.";
+        if (fs.existsSync(uploadPromptPath)) {
+            uploadPrompt = fs.readFileSync(uploadPromptPath, 'utf-8');
         } else {
-            console.warn('⚠️ No snapshot to restore');
+            console.warn(`⚠️ Snapshot upload prompt not found at ${uploadPromptPath}, using default.`);
+        }
+        console.log('📤 Uploading snapshot file with prompt...');
+        await client.executePipeline({ text: uploadPrompt, filePath: snapshotFilePath });
+
+        // 4. Удаляем временный файл снимка
+        try {
+            fs.unlinkSync(snapshotFilePath);
+            console.log(`🧹 Deleted snapshot file: ${snapshotFilePath}`);
+        } catch (e) {
+            console.warn(`Failed to delete snapshot file: ${snapshotFilePath}`);
         }
 
         console.log('✅ Sync transition completed, retrying original request');
