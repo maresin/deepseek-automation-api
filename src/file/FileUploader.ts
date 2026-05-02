@@ -31,15 +31,15 @@ export class FileUploader {
         const fileSizeChars = this.getFileSizeInChars(filePath);
         const can = await this.contextManager.canUploadFile(fileSizeChars);
         if (!can) {
-            throw new NeedTransitionError(`File too large for current context, need transition`);
+            throw new NeedTransitionError(`File too large`);
         }
         console.log(`📎 File size: ${fileSizeChars} chars`);
         const statsBefore = await this.contextManager.getStats();
-        console.log(`📊 [BEFORE FILE UPLOAD] Context: ${statsBefore.totalChars} / ${statsBefore.maxChars} chars (${statsBefore.percent}%)`);
+        console.log(`📊 [BEFORE] Context: ${statsBefore.totalChars} / ${statsBefore.maxChars} chars (${statsBefore.percent}%)`);
         await this.chatController.attachFile(filePath);
-        await this.contextManager.updateStats(fileSizeChars);
+        // НЕ вызываем updateStats
         const statsAfter = await this.contextManager.getStats();
-        console.log(`📊 [AFTER FILE UPLOAD] Context: ${statsAfter.totalChars} / ${statsAfter.maxChars} chars (${statsAfter.percent}%)`);
-        console.log(`📎 File uploaded: ${filePath}`);
+        console.log(`📊 [AFTER] Context: ${statsAfter.totalChars} / ${statsAfter.maxChars} chars (${statsAfter.percent}%)`);
+        console.log(`📎 File attached: ${filePath}`);
     }
 }

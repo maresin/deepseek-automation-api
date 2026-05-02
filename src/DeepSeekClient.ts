@@ -1,4 +1,3 @@
-// src/DeepSeekClient.ts
 import fs from 'fs';
 import path from 'path';
 import { BrowserManager } from './browser/BrowserManager.js';
@@ -15,8 +14,6 @@ import { Selectors } from './browser/Selectors.js';
 import { TaskQueue } from './task/TaskQueue.js';
 import { NewChatTask } from './tasks/NewChatTask.js';
 import { RestoreChatTask } from './tasks/RestoreChatTask.js';
-import { SendSystemPromptTask } from './tasks/SendSystemPromptTask.js';
-import { SendUserMessageTask } from './tasks/SendUserMessageTask.js';
 
 export class DeepSeekClient {
     public browserManager: BrowserManager;
@@ -26,10 +23,11 @@ export class DeepSeekClient {
     public featureToggles: FeatureToggles;
     public fileUploader: FileUploader;
     public contextManager: ContextManager;
-    public actionQueue: ActionQueue; // для обратной совместимости, можно удалить позже
+    public actionQueue: ActionQueue;
     public page: any;
     public config: any;
     public taskQueue: TaskQueue;
+    public needTransition: boolean = false; // добавлено
 
     private sessionRestorer: SessionRestorer;
     private isInitialized: boolean = false;
@@ -46,7 +44,7 @@ export class DeepSeekClient {
         this.contextManager = new ContextManager(this);
         this.fileUploader = new FileUploader(this.chatController, this.contextManager);
         this.sessionRestorer = new SessionRestorer(this.browserManager);
-        this.actionQueue = new ActionQueue(); // сохранён для совместимости, но будет вытеснен taskQueue
+        this.actionQueue = new ActionQueue();
         this.taskQueue = new TaskQueue(this);
     }
 
@@ -71,24 +69,18 @@ export class DeepSeekClient {
         await this.saveState();
         this.page = this.browserManager.page;
 
-        // Инициализация через очередь задач
         if (this.config.restoreSession) {
             await this.taskQueue.add(new RestoreChatTask());
         } else {
             await this.taskQueue.add(new NewChatTask());
         }
-        // if (this.config.systemPrompt) {
-        //     await this.taskQueue.add(new SendSystemPromptTask());
-        // }
 
         this.isInitialized = true;
         console.log('✅ DeepSeek client ready!');
     }
 
     async newChat(options: { expertMode?: boolean; restore?: boolean; skipSystemPrompt?: boolean } = {}): Promise<void> {
-        // Очищаем временные данные перед созданием нового чата
         await this.clearSessionData();
-
         await this.chatController.newChat();
         this.chatStarted = false;
         this.systemPromptSentFlag = false;
@@ -146,12 +138,19 @@ export class DeepSeekClient {
         }
     }
 
-    /**
-     * Pipeline for sending a message and receiving response (low-level browser actions)
-     * Does NOT involve task queue – just direct browser automation
-     */
-    public async executePipeline(options: { text: string; filePath?: string }): Promise<string> {
-        const { text, filePath } = options;
+    private getFileSizeInChars(filePath: string): number {
+        try {
+            const content = fs.readFileSync(filePath, 'utf-8');
+            return content.length;
+        } catch {
+            const stats = fs.statSync(filePath);
+            return stats.size;
+        }
+    }
+
+    // ОСНОВНОЙ МЕТОД – минимальные изменения
+    public async executePipeline(options: { text: string; filePath?: string; skipStatsUpdate?: boolean }): Promise<string> {
+        const { text, filePath, skipStatsUpdate = false } = options;
         const lastKey = await this.getMaxMessageKey();
 
         if (filePath) {
@@ -164,23 +163,36 @@ export class DeepSeekClient {
         }
         await this.chatController.send();
 
-        // Ждём завершения генерации ответа (метод отслеживает стрелку)
         await this.chatController.waitForResponseComplete();
-
-        // Теперь ожидаем появления нового сообщения
-        await this.waitForNewMessageKey(lastKey, 300000); // увеличенный таймаут
+        await this.waitForNewMessageKey(lastKey);
         const newKey = await this.getMaxMessageKey();
         const response = await this.responseExtractor.getResponseByKeyWithCopy(newKey);
         if (!response) {
             throw new Error('Failed to extract response from DeepSeek');
         }
+
+        // ========== ЕДИНСТВЕННОЕ ДОБАВЛЕНИЕ: учёт статистики ==========
+        if (!skipStatsUpdate) {
+            let addedChars = (text?.length || 0) + response.length;
+            if (filePath) {
+                addedChars += this.getFileSizeInChars(filePath);
+            }
+            await this.contextManager.updateStats(addedChars);
+            const stats = await this.contextManager.getStats();
+            if (stats.percent >= 90) {
+                this.needTransition = true;
+                console.log(`⚠️ Context at ${stats.percent}% – transition flagged for next request`);
+            }
+        }
+        // ============================================================
+
         return response;
     }
 
-    // Обёртка для совместимости: использует очередь задач
     async sendMessage(message: string, features: DeepSeekFeatures = {}, options: SendMessageOptions = {}): Promise<DeepSeekResponse> {
         const startTime = Date.now();
-        const task = new SendUserMessageTask(message, options.filePath);   // удалён третий аргумент
+        const { SendUserMessageTask } = await import('./tasks/SendUserMessageTask.js');
+        const task = new SendUserMessageTask(message, options.filePath);
         const content = await this.taskQueue.add(task);
         return {
             content,
@@ -200,7 +212,6 @@ export class DeepSeekClient {
     }
 
     private async clearSessionData(): Promise<void> {
-        // Удаляем временные файлы из uploads
         const uploadsDir = path.join(process.cwd(), 'uploads');
         if (fs.existsSync(uploadsDir)) {
             const files = fs.readdirSync(uploadsDir);
@@ -211,8 +222,8 @@ export class DeepSeekClient {
             }
             console.log(`🧹 Cleaned uploads folder (${files.length} files)`);
         }
-        // Сбрасываем контекст (счётчик, снимки)
         await this.contextManager.resetContext();
+        await this.contextManager.deleteSnapshotFile(); // добавить этот метод в ContextManager
     }
 
     private async loadState(): Promise<any> {
@@ -220,21 +231,19 @@ export class DeepSeekClient {
         return await this.browserManager.loadState(statePath);
     }
 
-        async cleanup(): Promise<void> {
-            console.log('🧹 Cleaning up temporary files and context data...');
-            // Очищаем папку uploads
-            const uploadsDir = path.join(process.cwd(), 'uploads');
-            if (fs.existsSync(uploadsDir)) {
-                const files = fs.readdirSync(uploadsDir);
-                for (const file of files) {
-                    try {
-                        fs.unlinkSync(path.join(uploadsDir, file));
-                    } catch (e) {}
-                }
+    async cleanup(): Promise<void> {
+        console.log('🧹 Cleaning up temporary files and context data...');
+        const uploadsDir = path.join(process.cwd(), 'uploads');
+        if (fs.existsSync(uploadsDir)) {
+            const files = fs.readdirSync(uploadsDir);
+            for (const file of files) {
+                try {
+                    fs.unlinkSync(path.join(uploadsDir, file));
+                } catch (e) {}
             }
-            // Очищаем контекстные данные
-            await this.contextManager.clearAllContextData();
         }
+        await this.contextManager.clearAllContextData();
+    }
 
     async close(): Promise<void> {
         await this.browserManager.close();
