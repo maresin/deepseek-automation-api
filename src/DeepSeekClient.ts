@@ -27,7 +27,7 @@ export class DeepSeekClient {
     public page: any;
     public config: any;
     public taskQueue: TaskQueue;
-    public needTransition: boolean = false; // флаг для перехода
+    public needTransition: boolean = false; // флаг для отложенного перехода
 
     private sessionRestorer: SessionRestorer;
     private isInitialized: boolean = false;
@@ -122,7 +122,6 @@ export class DeepSeekClient {
     async executeSystemPrompt(): Promise<void> {
         const message = this.config.systemPrompt;
         if (!message) return;
-        // Системный промпт – обычный запрос, учитываем контекст (skipStatsUpdate = false)
         await this.executePipeline({ text: message, skipStatsUpdate: false });
         this.setSystemPromptSent(true);
         console.log('✅ System prompt sent and confirmed');
@@ -160,7 +159,6 @@ export class DeepSeekClient {
             throw new Error('Failed to extract response from DeepSeek');
         }
 
-        // Учёт контекста (всегда, кроме случаев принудительного пропуска)
         if (!skipStatsUpdate) {
             let addedChars = (text?.length || 0) + response.length;
             if (filePath) {
@@ -211,7 +209,7 @@ export class DeepSeekClient {
             console.log(`🧹 Cleaned uploads folder (${files.length} files)`);
         }
         await this.contextManager.resetContext();
-        await this.contextManager.deleteSnapshotFile();
+        // Не удаляем снимки здесь, они управляются ContextManager
     }
 
     private async loadState(): Promise<any> {
