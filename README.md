@@ -1,7 +1,6 @@
 # DeepSeek Automation API
 
-OpenAI-compatible API server for DeepSeek chat with tool calling, web search, file upload, DeepThink (R1) support, and session recovery.
-
+OpenAI-compatible API server for DeepSeek chat with tool calling, web search, file upload, DeepThink (R1) support, session recovery, **automatic context management**, and **clipboard isolation**.
 
 ## Why This Exists
 
@@ -16,10 +15,10 @@ OpenAI-compatible API server for DeepSeek chat with tool calling, web search, fi
 - Supports all web features (DeepThink, web search, file uploads)
 - Maintains conversation context automatically
 - Can recover interrupted conversations from history
-- Works with any OpenAI-compatible client
+- **Automatically continues long conversations** when the context limit is reached (by transferring the conversation to a new chat)
+- **Never interferes with your system clipboard** – you can safely copy text while the API is running
 
 **The trade-off:** Because each request uses a real browser (not a direct API), responses take **15-30 seconds**. This tool is designed for programmatic tasks where latency is acceptable — batch processing, documentation generation, code analysis, CI/CD pipelines — not for real-time chat applications.
-
 
 ## How It Works
 
@@ -33,72 +32,6 @@ Your Application ⟵ OpenAI-compatible response ⟵ API Server → Browser Autom
 4. **Automation** types messages, clicks buttons, uploads files
 5. **Response** is captured from the browser and returned in OpenAI format
 
-
-## ⚠️ Important Notes
-
-### DeepSeek Account Required
-
-You must **register a free account** at https://chat.deepseek.com/ before using this API server.
-
-### Internal API Key
-
-The server generates a **random API key** (stored in `.api-key`) that is used only for authenticating requests to this server. It is **not related** to your DeepSeek credentials or the official DeepSeek API. You can get this key via the `/v1/register` endpoint.
-
-### Session Files
-
-| File | Description |
-|------|-------------|
-| `.api-key` | Your API key (random string, generated once) |
-| `state.json` | Browser session (DeepSeek cookies, saved automatically) |
-
-**Important:** Both files must exist and be consistent. If one is lost or corrupted, the server will automatically clean up on next startup — you'll need to re-register. Keep them safe!
-
-### Not Official
-
-This project is **not affiliated with or endorsed by DeepSeek**. It's an independent automation tool that interacts with the public DeepSeek web interface.
-
-### Web Interface Dependency
-
-This API works by automating the DeepSeek web interface. If DeepSeek changes its website design (HTML structure, CSS classes, button locations, or DOM elements), this API may stop working.
-
-**We actively monitor for such changes and release updated versions.** If you encounter issues:
-- Report the problem by opening a GitHub issue
-- Include details about what changed (if known)
-- We will investigate and release a fix as soon as possible
-
-**Latest stable version:** Always use the most recent release to ensure compatibility.
-
-### Conversation Context
-
-DeepSeek's web interface remembers the entire conversation history within a session. **You don't need to send previous messages** — the model already has full context. This is different from OpenAI's stateless API where you must send the entire message history each time.
-
-However, the context window is finite (though very large). When exceeded, you'll need to start a new session (re-register or restart the server).
-
-### Session Recovery
-
-With `RESTORE_SESSION=true`, the server not only restores the browser session but also **switches to the last open chat** from DeepSeek history. This allows you to continue interrupted conversations with full context — perfect for long-running automation tasks.
-
-### Clipboard Usage
-
-To extract responses, the automation clicks the "copy" button on the assistant's message and reads from the clipboard. This means:
-
-- **Do not copy any text manually** while the API is processing a request
-- **Do not use your clipboard** for other purposes during API calls
-- Your own clipboard content may be overwritten
-
-**Best practices:**
-- Run this API on a dedicated machine or VM where clipboard is not used manually
-- Use this tool primarily for automated, scripted workflows (CI/CD, batch processing, server-side tasks)
-
-### Browser Window
-
-**Do not close the browser window** — closing it will terminate the session and cause subsequent requests to fail.
-
-- The browser window can be **minimized** or **sent to background** — automation continues to work
-- The browser runs in non-headless mode by default (visible) to maintain session stability
-- On server shutdown, the session state is saved and restored on next startup
-
-
 ## Features
 
 - ✅ **OpenAI Compatible** – Use with OpenAI SDK, cURL, requests, or any OpenAI client
@@ -109,8 +42,9 @@ To extract responses, the automation clicks the "copy" button on the assistant's
 - ✅ **File Upload** – PDF, images, text, code, office documents
 - ✅ **Session Persistence** – Login once, browser state saved
 - ✅ **Session Recovery** – Resume last chat from history on startup
+- ✅ **Automatic Context Management** – The API tracks conversation size (up to 2.4 million characters of plain text) and seamlessly continues the chat when the limit is reached, using internal snapshots to preserve history.
+- ✅ **Clipboard Isolation** – The browser’s clipboard is completely emulated in memory; your system clipboard is never touched. You can safely copy text in other applications while the API is running.
 - ✅ **Cross-Platform** – Works on Linux, Windows, macOS
-
 
 ## Use Cases
 
@@ -120,7 +54,7 @@ To extract responses, the automation clicks the "copy" button on the assistant's
 - **Personal tools** – Integrate AI assistance into your workflow
 - **Testing** – Evaluate DeepSeek capabilities programmatically
 - **Content generation** – Batch process documents or articles
-
+- **Long-running tasks** – Automatic context continuation means no manual intervention
 
 ## Table of Contents
 
@@ -141,12 +75,11 @@ To extract responses, the automation clicks the "copy" button on the assistant's
 - [Reporting Issues](#reporting-issues)
 - [License](#license)
 
-
 ## Quick Start
 
 ```bash
 # Clone the project
-git clone https://github.com/yourusername/deepseek-automation-api.git
+git clone https://github.com/maresin/deepseek-automation-api.git
 cd deepseek-automation-api
 
 # Quick setup (Linux/macOS)
@@ -161,7 +94,7 @@ npm start                  # Start the server
 # In another terminal, get an API key
 curl -X POST http://localhost:3000/v1/register \
   -H "Content-Type: application/json" \
-  -d '{"email":"your@email.com","password":"yourpassword"}'
+  -d '{"email":"your@email.com","password":"your_password"}'
 
 # Send a message
 curl -X POST http://localhost:3000/v1/chat/completions \
@@ -169,7 +102,6 @@ curl -X POST http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"Hello!"}]}'
 ```
-
 
 ## Installation
 
@@ -206,7 +138,6 @@ The server runs on `http://localhost:3000`
 | **Windows** | Works out of the box |
 | **macOS** | Works out of the box |
 
-
 ## Usage
 
 ### Starting the Server
@@ -224,9 +155,6 @@ RESTORE_SESSION=true node server.js
 # On a different port
 PORT=3001 node server.js
 
-# With both options
-RESTORE_SESSION=true PORT=3001 node server.js
-
 # Background start (Linux/macOS)
 nohup node server.js > server.log 2>&1 &
 
@@ -241,7 +169,7 @@ start /B node server.js > server.log 2>&1
 ```bash
 curl -X POST http://localhost:3000/v1/register \
   -H "Content-Type: application/json" \
-  -d '{"email":"your@email.com","password":"yourpassword"}'
+  -d '{"email":"your@email.com","password":"your_password"}'
 ```
 
 **Manual login (browser opens, log in yourself):**
@@ -254,7 +182,7 @@ curl -X POST http://localhost:3000/v1/register -d '{}'
 
 ```json
 {
-  "api_key": "deepseek_1734567890123_abc123def456",
+  "api_key": "<YOUR_API_KEY>",
   "message": "Store this API key securely. It will not be shown again."
 }
 ```
@@ -263,7 +191,7 @@ curl -X POST http://localhost:3000/v1/register -d '{}'
 
 ### Basic Chat
 
-> **Note:** You don't need to send previous messages — the session remembers context automatically.
+> **Note:** You don't need to send previous messages — the session remembers context automatically, and the API will automatically continue the conversation if the context limit is reached.
 
 #### cURL
 
@@ -273,7 +201,7 @@ curl -X POST http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "email": "your@email.com",
-    "password": "yourpassword",
+    "password": "your_password",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 
@@ -296,7 +224,7 @@ resp = requests.post(
     "http://localhost:3000/v1/chat/completions",
     json={
         "email": "your@email.com",
-        "password": "yourpassword",
+        "password": "your_password",
         "messages": [{"role": "user", "content": "Hello!"}]
     }
 )
@@ -324,7 +252,7 @@ import requests
 # Step 1: Register and get API key
 resp = requests.post(
     "http://localhost:3000/v1/register",
-    json={"email": "your@email.com", "password": "yourpassword"}
+    json={"email": "your@email.com", "password": "your_password"}
 )
 api_key = resp.json()["api_key"]
 print(f"Your API key: {api_key}")
@@ -342,9 +270,6 @@ response = client.chat.completions.create(
 )
 
 print(response.choices[0].message.content)
-
-# Alternative: First request with extra_body (API key returned in headers)
-# Note: OpenAI SDK doesn't expose response headers easily, so use requests method above
 ```
 
 #### JavaScript (fetch)
@@ -356,7 +281,7 @@ const response = await fetch("http://localhost:3000/v1/chat/completions", {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
         email: "your@email.com",
-        password: "yourpassword",
+        password: "your_password",
         messages: [{ role: "user", content: "Hello!" }]
     })
 });
@@ -414,7 +339,7 @@ curl -X POST http://localhost:3000/v1/chat/completions \
 ```python
 import requests
 
-API_KEY = "deepseek_1734567890123_abc123def456"
+API_KEY = "<YOUR_API_KEY>"
 
 tools = [{
     "type": "function",
@@ -454,7 +379,7 @@ else:
 ```python
 from openai import OpenAI
 
-API_KEY = "deepseek_1734567890123_abc123def456"
+API_KEY = "<YOUR_API_KEY>"
 
 client = OpenAI(
     base_url="http://localhost:3000/v1",
@@ -489,49 +414,6 @@ else:
     print(message.content)
 ```
 
-#### JavaScript (fetch)
-
-```javascript
-const API_KEY = "deepseek_1734567890123_abc123def456";
-
-const tools = [{
-    type: "function",
-    function: {
-        name: "get_weather",
-        description: "Get current weather for a city",
-        parameters: {
-            type: "object",
-            properties: { location: { type: "string" } },
-            required: ["location"]
-        }
-    }
-}];
-
-const response = await fetch("http://localhost:3000/v1/chat/completions", {
-    method: "POST",
-    headers: {
-        "Authorization": `Bearer ${API_KEY}`,
-        "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-        messages: [{ role: "user", content: "What is the weather in Moscow?" }],
-        tools: tools
-    })
-});
-
-const data = await response.json();
-const message = data.choices[0].message;
-
-if (message.tool_calls) {
-    message.tool_calls.forEach(tool => {
-        console.log(`Function: ${tool.function.name}`);
-        console.log(`Arguments: ${tool.function.arguments}`);
-    });
-} else {
-    console.log(message.content);
-}
-```
-
 ### DeepThink, Web Search, Expert Mode
 
 Pass features in `extra_body`.
@@ -563,7 +445,7 @@ curl -X POST http://localhost:3000/v1/chat/completions \
 ```python
 import requests
 
-API_KEY = "deepseek_1734567890123_abc123def456"
+API_KEY = "<YOUR_API_KEY>"
 
 response = requests.post(
     "http://localhost:3000/v1/chat/completions",
@@ -579,56 +461,6 @@ response = requests.post(
 )
 
 print(response.json()["choices"][0]["message"]["content"])
-```
-
-#### Python (OpenAI SDK)
-
-```python
-from openai import OpenAI
-
-API_KEY = "deepseek_1734567890123_abc123def456"
-
-client = OpenAI(
-    base_url="http://localhost:3000/v1",
-    api_key=API_KEY
-)
-
-response = client.chat.completions.create(
-    model="deepseek-chat",
-    messages=[{"role": "user", "content": "Explain quantum physics simply"}],
-    extra_body={
-        "deepthink": True,
-        "web_search": True,
-        "expert_mode": True
-    }
-)
-
-print(response.choices[0].message.content)
-```
-
-#### JavaScript (fetch)
-
-```javascript
-const API_KEY = "deepseek_1734567890123_abc123def456";
-
-const response = await fetch("http://localhost:3000/v1/chat/completions", {
-    method: "POST",
-    headers: {
-        "Authorization": `Bearer ${API_KEY}`,
-        "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-        messages: [{ role: "user", content: "Explain quantum physics simply" }],
-        extra_body: {
-            deepthink: true,
-            web_search: true,
-            expert_mode: true
-        }
-    })
-});
-
-const data = await response.json();
-console.log(data.choices[0].message.content);
 ```
 
 ### File Upload
@@ -656,7 +488,7 @@ curl -X POST http://localhost:3000/v1/files/upload-multiple \
 ```python
 import requests
 
-API_KEY = "deepseek_1734567890123_abc123def456"
+API_KEY = "<YOUR_API_KEY>"
 
 # Single file
 with open("document.pdf", "rb") as f:
@@ -680,38 +512,6 @@ response = requests.post(
 print(response.json())
 ```
 
-#### Python (OpenAI SDK)
-
-OpenAI SDK does not directly support file uploads to DeepSeek. Use the `requests` method above.
-
-#### JavaScript (fetch)
-
-```javascript
-const API_KEY = "deepseek_1734567890123_abc123def456";
-
-// Single file
-const formData = new FormData();
-formData.append("file", fileInput.files[0]);
-
-const response = await fetch("http://localhost:3000/v1/files/upload", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${API_KEY}` },
-    body: formData
-});
-
-// Multiple files
-const formDataMultiple = new FormData();
-formDataMultiple.append("files", file1);
-formDataMultiple.append("files", file2);
-
-const response2 = await fetch("http://localhost:3000/v1/files/upload-multiple", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${API_KEY}` },
-    body: formDataMultiple
-});
-```
-
-
 ## API Reference
 
 ### Endpoints
@@ -722,6 +522,8 @@ const response2 = await fetch("http://localhost:3000/v1/files/upload-multiple", 
 | POST | `/v1/chat/completions` | Chat (OpenAI compatible) |
 | POST | `/v1/files/upload` | Upload single file |
 | POST | `/v1/files/upload-multiple` | Upload multiple files |
+| POST | `/v1/chat/new` | Create new chat (with expert mode toggle) |
+| GET | `/v1/settings/expert/status` | Get current expert/instant mode |
 | GET | `/health` | Server health check |
 
 ### Rate Limits
@@ -766,7 +568,6 @@ const response2 = await fetch("http://localhost:3000/v1/files/upload-multiple", 
 | 429 | Rate limit exceeded |
 | 500 | Server error (check logs) |
 
-
 ## Examples
 
 The `examples/` folder contains ready-to-run scripts:
@@ -785,13 +586,14 @@ python examples/with-tools.py
 python examples/with-features.py
 ```
 
-
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PORT` | Server port | `3000` |
 | `RESTORE_SESSION` | Restore last chat from history on startup | `false` |
+| `DEEPSEEK_EMAIL` | Email for auto-registration | - |
+| `DEEPSEEK_PASSWORD` | Password for auto-registration | - |
 
 ```bash
 # Start with session recovery
@@ -800,7 +602,6 @@ RESTORE_SESSION=true node server.js
 # On a different port with recovery
 RESTORE_SESSION=true PORT=3001 node server.js
 ```
-
 
 ## Scripts
 
@@ -814,7 +615,6 @@ RESTORE_SESSION=true PORT=3001 node server.js
 | `npm run dev` | Start with auto-reload (nodemon) |
 | `./scripts/setup.sh` | Complete automated setup (Linux/macOS) |
 | `node scripts/install-browser.js` | Install browser via Playwright |
-
 
 ## Troubleshooting
 
@@ -832,12 +632,6 @@ RESTORE_SESSION=true PORT=3001 node server.js
 ```bash
 npm run postinstall
 ```
-
-### "Cannot read clipboard" Error
-
-**Problem:** Browser needs permission to read the clipboard.
-
-**Solution:** Click "Allow" when the permission dialog appears, or the server will fall back to DOM parsing.
 
 ### Slow Responses
 
@@ -869,22 +663,20 @@ PORT=3001 node server.js
 
 ### API Returns Empty or Incomplete Responses
 
-**Problem:** Clipboard interference or browser window closed.
+**Problem:** Browser window closed or clipboard interference (with new clipboard isolation this is rare).
 
 **Solution:**
-- Don't copy text manually while API is processing
-- Ensure browser window is open (can be minimized)
-- Check if DeepSeek website changed (open it manually)
-- Restart the server
+- Ensure browser window is open (can be minimized).
+- Check if DeepSeek website changed (open it manually).
+- Restart the server.
 
-### Context Window Exceeded
+### Context Limit Reached – Automatic Continuation
 
-**Problem:** DeepSeek cannot continue in the current session.
+The API handles context limits automatically. You will see log messages like `⚠️ Context at ...% – transition flagged` and `🔄 Starting transition to new chat`. No action is needed from you.
 
-**Solution:**
-- Restart the server to start a new session
-- Use `RESTORE_SESSION=true` to resume the last chat
-- For long-running automations, implement periodic session resets
+### Clipboard Interference
+
+**The API now isolates its clipboard operations completely.** You can safely copy text in other applications while the API is running — your clipboard will never be overwritten.
 
 ### API Stops Working After DeepSeek Website Update
 
@@ -894,7 +686,6 @@ PORT=3001 node server.js
 1. Check for a new release of this project
 2. If no release exists, open a GitHub issue describing the problem
 3. We will investigate and release an updated version
-
 
 ## Reporting Issues
 
@@ -910,11 +701,9 @@ If you encounter problems:
    - Steps to reproduce
    - Whether DeepSeek website changed (if known)
 
-
 ## License
 
 MIT
-
 
 ## Support
 
