@@ -1,4 +1,3 @@
-// src/browser/BrowserManager.ts
 import { chromium, Browser, BrowserContext, Page } from 'playwright-core';
 import { getChromiumExecutablePath } from '../utils/paths.js';
 import fs from 'fs';
@@ -13,14 +12,69 @@ export class BrowserManager {
         this.browser = await chromium.launch({
             headless,
             executablePath: chromePath,
-            args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
+            args: [
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled'
+            ]
         });
+
         this.context = await this.browser.newContext({
             viewport,
             userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             storageState,
             permissions: ['clipboard-read', 'clipboard-write']
         });
+
+        // Изоляция буфера обмена: подмена navigator.clipboard на эмуляцию в памяти
+        await this.context.addInitScript(() => {
+            if ((window as any).__playwright_clipboard_isolated) return;
+
+            let clipboardData = '';
+
+            class FakeClipboardItem {
+                constructor(public data: string) {}
+                async getType(type: string) {
+                    if (type === 'text/plain') {
+                        return new Blob([this.data], { type: 'text/plain' });
+                    }
+                    throw new Error('Unsupported type');
+                }
+            }
+
+            const fakeClipboard = {
+                async writeText(text: string): Promise<void> {
+                    clipboardData = text;
+                    console.log('[IsolatedClipboard] writeText:', text.substring(0, 50));
+                },
+                async readText(): Promise<string> {
+                    console.log('[IsolatedClipboard] readText returning:', clipboardData.substring(0, 50));
+                    return clipboardData;
+                },
+                async write(items: any[]): Promise<void> {
+                    for (const item of items) {
+                        const blob = await item.getType('text/plain');
+                        const text = await blob.text();
+                        clipboardData = text;
+                    }
+                },
+                async read(): Promise<any[]> {
+                    return [new FakeClipboardItem(clipboardData)];
+                },
+                addEventListener() {},
+                removeEventListener() {},
+                dispatchEvent() { return true; }
+            };
+
+            Object.defineProperty(navigator, 'clipboard', {
+                value: fakeClipboard,
+                writable: false,
+                configurable: true
+            });
+
+            (window as any).__playwright_clipboard_isolated = true;
+        });
+
         this.page = await this.context.newPage();
         await this.page.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });

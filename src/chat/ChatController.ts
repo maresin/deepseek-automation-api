@@ -1,4 +1,3 @@
-// src/chat/ChatController.ts
 import { BrowserManager } from '../browser/BrowserManager.js';
 import { Selectors } from '../browser/Selectors.js';
 
@@ -14,16 +13,17 @@ export class ChatController {
 
     async typeMessage(message: string): Promise<void> {
         const page = this.browserManager.page!;
+        await page.click(Selectors.textarea);
         if (message.length <= 50) {
+            // Короткие сообщения вводим посимвольно (опционально)
             for (const char of message) {
                 await page.keyboard.type(char);
                 await page.waitForTimeout(50);
             }
         } else {
-            await page.evaluate((text) => navigator.clipboard.writeText(text), message);
+            // Длинные сообщения: прямая вставка без буфера обмена
+            await page.keyboard.insertText(message);
             await page.waitForTimeout(200);
-            await page.keyboard.press('Control+V');
-            await page.waitForTimeout(500);
         }
     }
 
@@ -89,20 +89,10 @@ export class ChatController {
         const start = Date.now();
         while (Date.now() - start < timeoutMs) {
             const hasArrow = await page.evaluate((icon) => document.body.innerHTML.includes(icon), arrowIcon);
-            if (!hasArrow) {
+            if (!hasArrow && !arrowDisappeared) {
                 arrowDisappeared = true;
                 console.log('   Arrow disappeared - response generation started');
-                break;
-            }
-            await page.waitForTimeout(1000);
-        }
-        if (!arrowDisappeared) {
-            console.log('   Arrow never disappeared, continuing');
-            return;
-        }
-        while (Date.now() - start < timeoutMs) {
-            const hasArrow = await page.evaluate((icon) => document.body.innerHTML.includes(icon), arrowIcon);
-            if (hasArrow) {
+            } else if (hasArrow && arrowDisappeared) {
                 console.log('   Arrow returned - response complete');
                 await page.waitForTimeout(2000);
                 return;
