@@ -27,7 +27,7 @@ export class DeepSeekClient {
     public page: any;
     public config: any;
     public taskQueue: TaskQueue;
-    public needTransition: boolean = false; // добавлено
+    public needTransition: boolean = false; // флаг для перехода
 
     private sessionRestorer: SessionRestorer;
     private isInitialized: boolean = false;
@@ -122,20 +122,10 @@ export class DeepSeekClient {
     async executeSystemPrompt(): Promise<void> {
         const message = this.config.systemPrompt;
         if (!message) return;
-        const lastKey = await this.getMaxMessageKey();
-        await this.chatController.clearInput();
-        await this.chatController.typeMessage(message);
-        await this.chatController.send();
-        await this.waitForNewMessageKey(lastKey);
-        const newKey = await this.getMaxMessageKey();
-        const response = await this.responseExtractor.getResponseByKeyWithCopy(newKey);
-        if (response && response.toLowerCase().includes('ok')) {
-            this.setSystemPromptSent(true);
-            console.log('✅ System prompt confirmed');
-        } else {
-            console.warn('⚠️ System prompt response not OK:', response);
-            this.setSystemPromptSent(true);
-        }
+        // Системный промпт – обычный запрос, учитываем контекст (skipStatsUpdate = false)
+        await this.executePipeline({ text: message, skipStatsUpdate: false });
+        this.setSystemPromptSent(true);
+        console.log('✅ System prompt sent and confirmed');
     }
 
     private getFileSizeInChars(filePath: string): number {
@@ -148,7 +138,6 @@ export class DeepSeekClient {
         }
     }
 
-    // ОСНОВНОЙ МЕТОД – минимальные изменения
     public async executePipeline(options: { text: string; filePath?: string; skipStatsUpdate?: boolean }): Promise<string> {
         const { text, filePath, skipStatsUpdate = false } = options;
         const lastKey = await this.getMaxMessageKey();
@@ -171,7 +160,7 @@ export class DeepSeekClient {
             throw new Error('Failed to extract response from DeepSeek');
         }
 
-        // ========== ЕДИНСТВЕННОЕ ДОБАВЛЕНИЕ: учёт статистики ==========
+        // Учёт контекста (всегда, кроме случаев принудительного пропуска)
         if (!skipStatsUpdate) {
             let addedChars = (text?.length || 0) + response.length;
             if (filePath) {
@@ -184,7 +173,6 @@ export class DeepSeekClient {
                 console.log(`⚠️ Context at ${stats.percent}% – transition flagged for next request`);
             }
         }
-        // ============================================================
 
         return response;
     }
@@ -223,7 +211,7 @@ export class DeepSeekClient {
             console.log(`🧹 Cleaned uploads folder (${files.length} files)`);
         }
         await this.contextManager.resetContext();
-        await this.contextManager.deleteSnapshotFile(); // добавить этот метод в ContextManager
+        await this.contextManager.deleteSnapshotFile();
     }
 
     private async loadState(): Promise<any> {

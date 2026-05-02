@@ -1,4 +1,3 @@
-// src/file/FileUploader.ts
 import fs from 'fs';
 import { ChatController } from '../chat/ChatController.js';
 import { ContextManager } from '../context/ContextManager.js';
@@ -20,9 +19,8 @@ export class FileUploader {
         try {
             const content = fs.readFileSync(filePath, 'utf-8');
             return content.length;
-        } catch (err) {
+        } catch {
             const stats = fs.statSync(filePath);
-            console.warn(`File not UTF-8, using byte size as char estimate: ${stats.size} bytes`);
             return stats.size;
         }
     }
@@ -31,13 +29,13 @@ export class FileUploader {
         const fileSizeChars = this.getFileSizeInChars(filePath);
         const can = await this.contextManager.canUploadFile(fileSizeChars);
         if (!can) {
-            throw new NeedTransitionError(`File too large`);
+            throw new NeedTransitionError(`File too large for current context, need transition (${fileSizeChars} chars required)`);
         }
         console.log(`📎 File size: ${fileSizeChars} chars`);
         const statsBefore = await this.contextManager.getStats();
         console.log(`📊 [BEFORE] Context: ${statsBefore.totalChars} / ${statsBefore.maxChars} chars (${statsBefore.percent}%)`);
         await this.chatController.attachFile(filePath);
-        // НЕ вызываем updateStats
+        // НЕ обновляем статистику здесь – это делает executePipeline
         const statsAfter = await this.contextManager.getStats();
         console.log(`📊 [AFTER] Context: ${statsAfter.totalChars} / ${statsAfter.maxChars} chars (${statsAfter.percent}%)`);
         console.log(`📎 File attached: ${filePath}`);
