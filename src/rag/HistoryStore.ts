@@ -1,8 +1,8 @@
+// src/rag/HistoryStore.ts
 import path from 'path';
 import fs from 'fs';
-import { IEmbeddingService } from './types.js';
+import { IEmbeddingService, IndexedItem, SearchResult, Exchange, FileChunk } from './types.js';
 import { IVectorIndex, EadaVectorIndex } from './VectorIndex.js';
-import { Message, SearchResult } from './types.js';
 
 export class HistoryStore {
     private index: IVectorIndex;
@@ -16,7 +16,7 @@ export class HistoryStore {
         this.dataDir = dataDir;
         this.index = new EadaVectorIndex(384);
         this.ensureDataDir();
-        this.loadIndex();
+        this.loadIndex().catch(console.error);
     }
 
     private ensureDataDir(): void {
@@ -40,22 +40,38 @@ export class HistoryStore {
         await this.index.save(this.getIndexPath());
     }
 
-    async addMessage(role: Message['role'], content: string): Promise<void> {
-        const message: Message = {
-            role,
-            content,
+    async addExchange(userMessage: string, assistantMessage: string): Promise<void> {
+        const combined = `Q: ${userMessage}\nA: ${assistantMessage}`;
+        const embedding = await this.embeddingService.embed(combined);
+        const exchange: Exchange = {
+            type: 'exchange',
+            user: userMessage,
+            assistant: assistantMessage,
+            combined,
             timestamp: Date.now(),
+            embedding
         };
-        if (role === 'user') {
-            message.embedding = await this.embeddingService.embed(content);
-        }
-        if (message.embedding) {
-            this.index.add(message, message.embedding);
-            await this.saveIndex();
-        }
+        this.index.add(exchange, embedding);
+        await this.saveIndex();
+        console.log(`📝 Added exchange (${combined.length} chars) to history`);
     }
 
-    async search(query: string, topK: number = 3): Promise<SearchResult[]> {
+    async addFileChunk(fileName: string, chunkIndex: number, content: string): Promise<void> {
+        const embedding = await this.embeddingService.embed(content);
+        const chunk: FileChunk = {
+            type: 'file',
+            fileName,
+            chunkIndex,
+            content,
+            timestamp: Date.now(),
+            embedding
+        };
+        this.index.add(chunk, embedding);
+        await this.saveIndex();
+        console.log(`📎 Added file chunk ${fileName}[${chunkIndex}] (${content.length} chars)`);
+    }
+
+    async search(query: string, topK: number = 5): Promise<SearchResult[]> {
         const queryVec = await this.embeddingService.embed(query);
         return this.index.search(queryVec, topK);
     }
@@ -63,9 +79,10 @@ export class HistoryStore {
     async clear(): Promise<void> {
         this.index.clear();
         await this.saveIndex();
+        console.log(`🗑️ HistoryStore cleared for session ${this.sessionId}`);
     }
 
-    getMessageCount(): number {
+    getEntryCount(): number {
         return this.index.size();
     }
 }

@@ -1,75 +1,65 @@
 const path = require('path');
 const fs = require('fs');
 const { getClient } = require('../state');
-const { buildPrompt } = require('../utils');
-const { RagManager } = require('../rag-manager.js');
+const { getHistoryStore } = require('../../dist/rag/init.js');
+const { buildPrompt } = require('../utils'); // для поддержки tools, если они переданы
 
-const ragSessions = new Map();
-const ragFlags = new Map();
-
-function getRagManager(apiKey) {
-    if (process.env.ENABLE_RAG !== 'true') return null;
-    if (!ragSessions.has(apiKey)) {
-        ragSessions.set(apiKey, new RagManager(apiKey));
-    }
-    return ragSessions.get(apiKey);
-}
-
-function setUseRAG(apiKey, value) {
-    ragFlags.set(apiKey, value);
-}
-
-function getUseRAG(apiKey) {
-    return ragFlags.get(apiKey) || false;
-}
-
-async function sendToDeepSeek(client, prompt, filePath) {
+async function sendToDeepSeek(client, text, filePath) {
     const { SendUserMessageTask } = require('../../dist/tasks/SendUserMessageTask.js');
-    const task = new SendUserMessageTask(prompt, filePath);
+    const task = new SendUserMessageTask(text || '', filePath);
     return await client.taskQueue.add(task);
 }
 
 module.exports = async function chatRoute(req, res) {
     const startTime = Date.now();
-    const { messages, tools, extra_body, file } = req.body;
+    const { messages, tools, file } = req.body;
     const client = getClient();
     if (!client) return res.status(503).json({ error: 'Client not ready' });
 
     const apiKey = req.headers.authorization?.replace('Bearer ', '') || 'default';
-    // Делаем apiKey доступным для SendUserMessageTask (костыль)
     global.currentApiKey = apiKey;
 
-    const rag = getRagManager(apiKey);
-    const useRAG = getUseRAG(apiKey);
-
-    const userMessage = messages.find(m => m.role === 'user');
-    if (!userMessage && !file) return res.status(400).json({ error: 'No user message or file provided' });
-
-    // --- Автоматический поиск в истории (RAG) ---
-    let finalUserContent = userMessage?.content || '';
-    if (useRAG && rag && userMessage?.content) {
-        console.log(`🔍 Auto-RAG: searching for "${userMessage.content.substring(0, 80)}..."`);
-        const results = await rag.search(userMessage.content, 5);
-        if (results.length > 0) {
-            const context = results.map(r => r.type === 'message'
-                ? `[${r.role}]: ${r.content}`
-                : `[File ${r.file}]: ${r.content}`
-            ).join('\n---\n');
-            finalUserContent = `Relevant history:\n${context}\n\n---\n\n${userMessage.content}`;
-            console.log(`✅ Auto-RAG: added ${results.length} fragments`);
-        } else {
-            console.log(`ℹ️ Auto-RAG: no relevant fragments`);
+    // RAG активируется только после перехода в новый чат (inRefreshedChat = true)
+    const useRAG = process.env.ENABLE_RAG === 'true' && client.inRefreshedChat === true;
+    let store = null;
+    if (useRAG) {
+        try {
+            store = await getHistoryStore(apiKey);
+        } catch (err) {
+            console.warn('Cannot get RAG store:', err);
         }
     }
-    // ------------------------------------------
 
-    const allTools = tools ? [...tools] : [];
-    const prompt = buildPrompt(finalUserContent, allTools);
+    const userMessageObj = messages.find(m => m.role === 'user');
+    if (!userMessageObj && !file) return res.status(400).json({ error: 'No user message or file provided' });
+    const userMessageText = userMessageObj?.content || '';
 
-    console.log(`📤 Original: ${userMessage?.content?.substring(0, 100)}`);
-    if (allTools.length) console.log(`🔧 Tools: ${allTools.map(t => t.function.name).join(', ')}`);
-    if (file) console.log(`📎 File: ${file.originalname}`);
+    // --- RAG: автоматическое обогащение запроса (без изменения tools) ---
+    let enrichedText = userMessageText;
+    if (useRAG && store && userMessageText) {
+        try {
+            const results = await store.search(userMessageText, 3);
+            if (results.length > 0) {
+                const contextBlocks = [];
+                for (const r of results) {
+                    if (r.item.type === 'exchange') {
+                        contextBlocks.push(`User: ${r.item.user}\nAssistant: ${r.item.assistant}`);
+                    } else if (r.item.type === 'file') {
+                        contextBlocks.push(`[From file ${r.item.fileName}]: ${r.item.content.substring(0, 500)}`);
+                    }
+                }
+                if (contextBlocks.length) {
+                    const contextSection = `Relevant previous conversation:\n${contextBlocks.join('\n---\n')}\n\n---\n\n`;
+                    enrichedText = contextSection + userMessageText;
+                    console.log(`📚 Enriched prompt with ${contextBlocks.length} fragments (RAG active after context transition)`);
+                }
+            }
+        } catch (err) {
+            console.error('RAG search failed:', err);
+        }
+    }
 
+    // --- Обработка файла ---
     let tempFilePath = null;
     if (file) {
         const ext = path.extname(file.originalname);
@@ -77,23 +67,26 @@ module.exports = async function chatRoute(req, res) {
         fs.renameSync(file.path, tempFilePath);
     }
 
-    if (rag && userMessage?.content) {
-        await rag.addMessage('user', userMessage.content);
+    // Формируем окончательный промпт с учётом tools (если они переданы)
+    // buildPrompt из utils.js добавляет описание tools в начало сообщения, если они есть.
+    // Это оригинальная логика, мы её сохраняем.
+    const finalPrompt = buildPrompt(enrichedText, tools);
+
+    // --- Отправка в DeepSeek ---
+    const assistantResponse = await sendToDeepSeek(client, finalPrompt, tempFilePath);
+
+    // --- Очистка временного файла ---
+    if (tempFilePath && fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
     }
 
-    const finalResult = await sendToDeepSeek(client, prompt, tempFilePath);
-
-    if (rag && finalResult) {
-        let content = finalResult;
-        try { content = JSON.parse(finalResult).content || finalResult; } catch(e) {}
-        await rag.addMessage('assistant', content);
+    // --- Сохранение обмена в RAG (только если RAG активен) ---
+    if (useRAG && store && userMessageText && assistantResponse) {
+        await store.addExchange(userMessageText, assistantResponse);
+        console.log('💾 Exchange saved to RAG store');
     }
 
-    if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
-
-    let parsed;
-    try { parsed = JSON.parse(finalResult); } catch(e) { parsed = { content: finalResult }; }
-
+    // --- Ответ клиенту в формате OpenAI ---
     res.json({
         id: `chatcmpl-${Date.now()}`,
         object: 'chat.completion',
@@ -101,17 +94,14 @@ module.exports = async function chatRoute(req, res) {
         model: 'deepseek-chat',
         choices: [{
             index: 0,
-            message: { role: 'assistant', content: parsed.content || finalResult },
+            message: { role: 'assistant', content: assistantResponse },
             finish_reason: 'stop'
         }],
         usage: {
-            prompt_tokens: Math.ceil(prompt.length / 4),
-            completion_tokens: Math.ceil(finalResult.length / 4),
-            total_tokens: Math.ceil((prompt.length + finalResult.length) / 4)
+            prompt_tokens: Math.ceil(finalPrompt.length / 4),
+            completion_tokens: Math.ceil(assistantResponse.length / 4),
+            total_tokens: Math.ceil((finalPrompt.length + assistantResponse.length) / 4)
         }
     });
     console.log(`✅ Response in ${Date.now() - startTime}ms`);
 };
-
-module.exports.setUseRAG = setUseRAG;
-module.exports.getUseRAG = getUseRAG;

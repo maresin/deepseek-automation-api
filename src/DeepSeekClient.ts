@@ -27,7 +27,8 @@ export class DeepSeekClient {
     public page: any;
     public config: any;
     public taskQueue: TaskQueue;
-    public needTransition: boolean = false; // флаг для отложенного перехода
+    public needTransition: boolean = false;
+    public inRefreshedChat: boolean = false; // NEW: флаг, что был переход в новый чат из-за контекста
 
     private sessionRestorer: SessionRestorer;
     private isInitialized: boolean = false;
@@ -84,6 +85,7 @@ export class DeepSeekClient {
         await this.chatController.newChat();
         this.chatStarted = false;
         this.systemPromptSentFlag = false;
+        this.inRefreshedChat = false; // новый чат – сбрасываем флаг
         if (options.expertMode !== undefined) {
             await this.featureToggles.setExpertMode(options.expertMode);
         }
@@ -209,7 +211,6 @@ export class DeepSeekClient {
             console.log(`🧹 Cleaned uploads folder (${files.length} files)`);
         }
         await this.contextManager.resetContext();
-        // Не удаляем снимки здесь, они управляются ContextManager
     }
 
     private async loadState(): Promise<any> {

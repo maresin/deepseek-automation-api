@@ -49,7 +49,9 @@ app.post('/v1/chat/completions', authenticate, upload.single('file'), (req, res,
 }, chatRoute);
 
 app.post('/v1/files/upload', authenticate, upload.single('file'), uploadSingle);
+
 app.post('/v1/files/upload-multiple', authenticate, upload.array('files', 10), uploadMultiple);
+
 app.post('/v1/chat/new', authenticate, async (req, res) => {
     if (!isReady()) {
         return res.status(503).json({ error: 'Client not ready' });
@@ -58,12 +60,28 @@ app.post('/v1/chat/new', authenticate, async (req, res) => {
     const client = getClient();
     try {
         await client.newChat({ expertMode: expert_mode, restore: restore || false });
+        
+        // При создании нового чата (не восстановленного) очищаем RAG-историю для этого apiKey
+        const apiKey = req.headers.authorization?.replace('Bearer ', '');
+        if (apiKey && !restore) {
+            try {
+                const { getHistoryStore } = require('./dist/rag/init.js');
+                const store = await getHistoryStore(apiKey);
+                await store.clear();
+                console.log(`🧹 RAG store cleared for new chat session (${apiKey})`);
+            } catch (err) {
+                // RAG может быть не включён – игнорируем
+            }
+        }
+        // Сбрасываем флаг inRefreshedChat, т.к. теперь чат новый
+        client.inRefreshedChat = false;
         res.json({ success: true, expert_mode, restore });
     } catch (err) {
         console.error('Failed to create new chat:', err);
         res.status(500).json({ error: err.message });
     }
 });
+
 app.get('/v1/settings/expert/status', authenticate, getStatus);
 
 process.on('SIGINT', async () => {
@@ -101,10 +119,11 @@ process.on('SIGTERM', async () => {
 
 const PORT = process.env.PORT || 3000;
 
-// Инициализация RAG (если включён) – без мок-роута
 if (process.env.ENABLE_RAG === 'true') {
     console.log('✅ RAG module enabled (real embeddings with Xenova/all-MiniLM-L6-v2)');
-    // Глобальное хранилище RagManager создаётся автоматически при первом вызове
+    // Добавляем инициализацию RAG
+    const { initRAG } = require('./dist/rag/init.js');
+    initRAG().catch(err => console.error('RAG init failed:', err));
 }
 
 app.listen(PORT, () => {

@@ -1,23 +1,29 @@
-import { Message, SearchResult } from './types.js';
+import { IndexedItem, SearchResult } from './types.js';
 
-// Динамический импорт для обхода проблем с типами eada-cpu
-let Index: any;
-try {
-    const eada = require('eada-cpu');
-    Index = eada.Index || eada.default?.Index || eada;
-} catch (err) {
-    console.warn('eada-cpu not available, falling back to in-memory stub');
-    Index = class {
-        constructor(public type: string, public dim: number) {}
-        add() {}
-        search() { return []; }
-        save() {}
-        load() {}
-    };
+let eadaIndex: any = null;
+
+function getEadaIndex() {
+    if (!eadaIndex) {
+        try {
+            const eada = require('eada-cpu');
+            eadaIndex = eada.Index || eada.default?.Index || eada;
+            if (!eadaIndex) throw new Error('Cannot find Index in eada-cpu');
+        } catch (err) {
+            console.warn('eada-cpu not available, falling back to in-memory stub');
+            eadaIndex = class {
+                constructor(public type: string, public dim: number) {}
+                add() {}
+                search() { return []; }
+                save() {}
+                load() {}
+            };
+        }
+    }
+    return eadaIndex;
 }
 
 export interface IVectorIndex {
-    add(message: Message, vector: number[]): void;
+    add(item: IndexedItem, vector: number[]): void;
     search(queryVector: number[], topK: number): SearchResult[];
     save(path: string): Promise<void>;
     load(path: string): Promise<void>;
@@ -27,23 +33,24 @@ export interface IVectorIndex {
 
 export class EadaVectorIndex implements IVectorIndex {
     private index: any;
-    private messages: Message[] = [];
+    private items: IndexedItem[] = [];
     private dimension: number;
 
     constructor(dimension: number = 384) {
         this.dimension = dimension;
-        this.index = new Index('HNSW', dimension);
+        const IndexClass = getEadaIndex();
+        this.index = new IndexClass('HNSW', dimension);
     }
 
-    add(message: Message, vector: number[]): void {
+    add(item: IndexedItem, vector: number[]): void {
         this.index.add(vector);
-        this.messages.push(message);
+        this.items.push(item);
     }
 
     search(queryVector: number[], topK: number): SearchResult[] {
-        const results: Array<{ distance: number; label: number }> = this.index.search(queryVector, topK);
-        return results.map((res) => ({
-            message: this.messages[res.label],
+        const results = this.index.search(queryVector, topK);
+        return results.map((res: { distance: number; label: number }) => ({
+            item: this.items[res.label],
             similarity: 1 - res.distance
         }));
     }
@@ -52,7 +59,10 @@ export class EadaVectorIndex implements IVectorIndex {
         this.index.save(path);
         const fs = await import('fs/promises');
         const metaPath = path + '.meta.json';
-        await fs.writeFile(metaPath, JSON.stringify(this.messages, null, 2));
+        await fs.writeFile(metaPath, JSON.stringify(this.items, (key, value) => {
+            if (value instanceof Float32Array) return Array.from(value);
+            return value;
+        }));
     }
 
     async load(path: string): Promise<void> {
@@ -61,19 +71,24 @@ export class EadaVectorIndex implements IVectorIndex {
         const metaPath = path + '.meta.json';
         try {
             const data = await fs.readFile(metaPath, 'utf-8');
-            this.messages = JSON.parse(data);
+            const parsed = JSON.parse(data);
+            this.items = parsed.map((item: any) => {
+                if (item.embedding) item.embedding = new Float32Array(item.embedding);
+                return item;
+            });
         } catch (err) {
             console.warn('No metadata found for index, starting empty');
-            this.messages = [];
+            this.items = [];
         }
     }
 
     clear(): void {
-        this.index = new Index('HNSW', this.dimension);
-        this.messages = [];
+        const IndexClass = getEadaIndex();
+        this.index = new IndexClass('HNSW', this.dimension);
+        this.items = [];
     }
 
     size(): number {
-        return this.messages.length;
+        return this.items.length;
     }
 }

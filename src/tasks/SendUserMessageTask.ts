@@ -4,10 +4,6 @@ import { Task } from '../task/Task.js';
 import { DeepSeekClient } from '../DeepSeekClient.js';
 import { NeedTransitionError } from '../file/FileUploader.js';
 
-// Импортируем функции управления RAG-флагом из chat.js (CommonJS)
-// @ts-ignore
-const chatRoute = require('../../server-modules/routes/chat.js');
-
 export class SendUserMessageTask extends Task<string> {
     constructor(
         private text: string,
@@ -29,35 +25,7 @@ export class SendUserMessageTask extends Task<string> {
     }
 
     private getApiKey(): string {
-        // Апи ключ обычно передаётся в заголовке, но в контексте задачи у нас нет прямого доступа к req.
-        // Для простоты будем использовать фиксированный идентификатор сессии.
-        // В реальном проекте нужно передавать apiKey через глобальный контекст или сохранять в client.
         return (global as any).currentApiKey || 'default-api-key';
-    }
-
-    private async initRAGMode(client: DeepSeekClient): Promise<void> {
-        console.log('🔄 Switching to RAG mode (snapshot replaced by RAG)');
-        await client.chatController.newChat();
-        client.setChatStarted(false);
-        client.setSystemPromptSent(false);
-        await client.contextManager.resetContext();
-
-        // Устанавливаем флаг RAG для этой сессии
-        const apiKey = (global as any).currentApiKey || 'default-api-key';
-        const { setUseRAG } = require('../../server-modules/routes/chat.js');
-        setUseRAG(apiKey, true);
-
-        // Отправляем системный промпт из файла (вместо короткого сообщения)
-        const systemPromptPath = path.join(process.cwd(), 'prompts', 'rag_system_prompt.txt');
-        let ragInstruction = "You can use search_conversation tool to retrieve history.";
-        if (fs.existsSync(systemPromptPath)) {
-            ragInstruction = fs.readFileSync(systemPromptPath, 'utf-8');
-        } else {
-            console.warn('rag_system_prompt.txt not found, using default');
-        }
-        await client.executePipeline({ text: ragInstruction, skipStatsUpdate: false });
-
-        console.log('✅ RAG mode activated');
     }
 
     async execute(client: DeepSeekClient): Promise<string> {
@@ -151,18 +119,10 @@ export class SendUserMessageTask extends Task<string> {
         // 5. Удаляем временный файл
         try { if (fs.existsSync(snapshotFilePath)) fs.unlinkSync(snapshotFilePath); } catch(e) {}
 
+        // 6. Устанавливаем флаг, что был переход в новый чат – теперь можно использовать RAG
+        client.inRefreshedChat = true;
         client.needTransition = false;
-        console.log('✅ Sync transition completed');
-
-        // 6. Если RAG включён, активируем RAG-режим (это не отменяет снимок, а добавляет поиск)
-        if (process.env.ENABLE_RAG === 'true') {
-            const apiKey = (global as any).currentApiKey;
-            if (apiKey) {
-                console.log('🔧 Activating RAG mode for session', apiKey);
-                const { setUseRAG } = require('../../server-modules/routes/chat.js');
-                setUseRAG(apiKey, true);
-            }
-        }
+        console.log('✅ Sync transition completed, RAG mode activated for subsequent requests');
 
         // Повторяем исходный запрос (если нужно)
         if (this.text || this.filePath) {

@@ -1,20 +1,29 @@
+// src/rag/init.ts
 import { getEmbeddingService } from './EmbeddingService.js';
 import { HistoryStore } from './HistoryStore.js';
-import { setHistoryStore } from './ragTools.js';
 
-const globalStores = new Map<string, HistoryStore>();
+const stores = new Map<string, HistoryStore>();
+let embeddingService: any = null;
 
 export async function initRAG(): Promise<void> {
     console.log('🔧 Initializing RAG module with eada-cpu');
-    const embeddingService = await getEmbeddingService();
-    (global as any).__getRAGStore = async (sessionId: string) => {
-        if (!globalStores.has(sessionId)) {
-            const store = new HistoryStore(sessionId, embeddingService, process.env.RAG_DATA_DIR || './rag_data');
-            globalStores.set(sessionId, store);
-            setHistoryStore(sessionId, store);
-            console.log(`📚 Created HistoryStore for session ${sessionId}`);
-        }
-        return globalStores.get(sessionId)!;
-    };
+    embeddingService = await getEmbeddingService();
     console.log('✅ RAG module ready');
+}
+
+export async function getHistoryStore(sessionId: string): Promise<HistoryStore> {
+    if (!embeddingService) {
+        await initRAG();
+    }
+    if (!stores.has(sessionId)) {
+        const store = new HistoryStore(sessionId, embeddingService, process.env.RAG_DATA_DIR || './rag_data');
+        stores.set(sessionId, store);
+        console.log(`📚 Created HistoryStore for session ${sessionId}`);
+    }
+    return stores.get(sessionId)!;
+}
+
+// Для обратной совместимости с server.js
+if (typeof global !== 'undefined') {
+    (global as any).__getHistoryStore = getHistoryStore;
 }
