@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -101,6 +100,13 @@ process.on('SIGTERM', async () => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+// Инициализация RAG (если включён) – без мок-роута
+if (process.env.ENABLE_RAG === 'true') {
+    console.log('✅ RAG module enabled (real embeddings with Xenova/all-MiniLM-L6-v2)');
+    // Глобальное хранилище RagManager создаётся автоматически при первом вызове
+}
+
 app.listen(PORT, () => {
     console.log(`🚀 DeepSeek API server running on http://localhost:${PORT}`);
     console.log(`   POST /v1/register - Create session`);

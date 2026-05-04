@@ -9,6 +9,7 @@ export class ContextManager {
     private maxChars: number;
     private snapshotReserveRatio: number;
     private totalChars: number = 0;
+    private snapshotFilePath: string | null = null;    
     private lastSnapshot: string = '';
     private lastSnapshotChars: number = 0;
     private lastSnapshotPercent: number = 0;
@@ -87,7 +88,8 @@ export class ContextManager {
             this.lastSnapshot = snapshot;
             this.lastSnapshotChars = snapshot.length;
             this.lastSnapshotPercent = percent;
-        } catch (e) {}
+            console.log(`💾 Snapshot metadata saved (${snapshot.length} chars) at ${percent}%`);
+        } catch (e) { console.warn('Failed to save snapshot metadata:', e); }
     }
 
     async updateStats(addedChars: number): Promise<void> {
@@ -261,5 +263,37 @@ export class ContextManager {
     async getSnapshot(): Promise<string> {
         if (!this.lastSnapshot) this.loadSnapshotMetadata();
         return this.lastSnapshot;
+    }
+
+    // Замена файла снимка (используется при переходе)
+    public async replaceSnapshotFile(newFilePath: string): Promise<void> {
+        if (this.snapshotFilePath && this.snapshotFilePath !== newFilePath && fs.existsSync(this.snapshotFilePath)) {
+            try {
+                fs.unlinkSync(this.snapshotFilePath);
+                console.log(`🧹 Deleted old snapshot: ${this.snapshotFilePath}`);
+            } catch(e) {}
+        }
+        this.snapshotFilePath = newFilePath;
+        // Обновляем метаданные (текст снимка)
+        try {
+            const content = fs.readFileSync(newFilePath, 'utf-8');
+            this.lastSnapshot = content;
+            this.lastSnapshotChars = content.length;
+            this.saveSnapshotMetadata(content, this.lastSnapshotPercent);
+        } catch(e) {}
+        console.log(`📸 Snapshot replaced with: ${newFilePath}`);
+    }
+
+    // Возвращает путь к актуальному файлу снимка (если есть)
+    public getSnapshotFilePath(): string | null {
+        if (this.snapshotFilePath && fs.existsSync(this.snapshotFilePath)) {
+            return this.snapshotFilePath;
+        }
+        if (this.lastSnapshot && this.lastSnapshot.length > 0) {
+            this.snapshotFilePath = path.join(process.cwd(), 'uploads', `session_snapshot_${Date.now()}.txt`);
+            fs.writeFileSync(this.snapshotFilePath, this.lastSnapshot, 'utf-8');
+            return this.snapshotFilePath;
+        }
+        return null;
     }
 }
