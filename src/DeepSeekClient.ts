@@ -28,7 +28,8 @@ export class DeepSeekClient {
     public config: any;
     public taskQueue: TaskQueue;
     public needTransition: boolean = false;
-    public inRefreshedChat: boolean = false; // NEW: флаг, что был переход в новый чат из-за контекста
+    public inRefreshedChat: boolean = false;
+    public currentChatId: string; // NEW: идентификатор текущего чата
 
     private sessionRestorer: SessionRestorer;
     private isInitialized: boolean = false;
@@ -47,6 +48,7 @@ export class DeepSeekClient {
         this.sessionRestorer = new SessionRestorer(this.browserManager);
         this.actionQueue = new ActionQueue();
         this.taskQueue = new TaskQueue(this);
+        this.currentChatId = Date.now().toString(); // уникальный ID при создании клиента
     }
 
     isSystemPromptSent(): boolean { return this.systemPromptSentFlag; }
@@ -81,11 +83,19 @@ export class DeepSeekClient {
     }
 
     async newChat(options: { expertMode?: boolean; restore?: boolean; skipSystemPrompt?: boolean } = {}): Promise<void> {
+        // Если это не восстановление существующего чата, создаём новый ID
+        if (!options.restore) {
+            this.currentChatId = Date.now().toString();
+            console.log(`🆕 New chat created with ID: ${this.currentChatId}`);
+        } else {
+            console.log(`♻️ Restoring chat, keeping existing ID: ${this.currentChatId}`);
+        }
+
         await this.clearSessionData();
         await this.chatController.newChat();
         this.chatStarted = false;
         this.systemPromptSentFlag = false;
-        this.inRefreshedChat = false; // новый чат – сбрасываем флаг
+        this.inRefreshedChat = false; // сбрасываем флаг перехода, так как чат новый
         if (options.expertMode !== undefined) {
             await this.featureToggles.setExpertMode(options.expertMode);
         }

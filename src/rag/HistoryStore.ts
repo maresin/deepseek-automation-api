@@ -9,12 +9,14 @@ export class HistoryStore {
     private embeddingService: IEmbeddingService;
     private dataDir: string;
     private sessionId: string;
+    private chunkSize: number;
 
     constructor(sessionId: string, embeddingService: IEmbeddingService, dataDir: string = './rag_data') {
         this.sessionId = sessionId;
         this.embeddingService = embeddingService;
         this.dataDir = dataDir;
         this.index = new EadaVectorIndex(384);
+        this.chunkSize = parseInt(process.env.RAG_CHUNK_SIZE || '2000', 10);
         this.ensureDataDir();
         this.loadIndex().catch(console.error);
     }
@@ -40,26 +42,42 @@ export class HistoryStore {
         await this.index.save(this.getIndexPath());
     }
 
-    async addExchange(userMessage: string, assistantMessage: string): Promise<void> {
-        const combined = `Q: ${userMessage}\nA: ${assistantMessage}`;
-        const embedding = await this.embeddingService.embed(combined);
-        const exchange: Exchange = {
-            type: 'exchange',
-            user: userMessage,
-            assistant: assistantMessage,
-            combined,
-            timestamp: Date.now(),
-            embedding
-        };
-        this.index.add(exchange, embedding);
-        await this.saveIndex();
-        console.log(`📝 Added exchange (${combined.length} chars) to history`);
+    private chunkText(text: string): string[] {
+        const chunks: string[] = [];
+        for (let i = 0; i < text.length; i += this.chunkSize) {
+            chunks.push(text.slice(i, i + this.chunkSize));
+        }
+        return chunks;
     }
 
-    async addFileChunk(fileName: string, chunkIndex: number, content: string): Promise<void> {
+    async addExchange(chatId: string, userMessage: string, assistantMessage: string): Promise<void> {
+        const combined = `Q: ${userMessage}\nA: ${assistantMessage}`;
+        const chunks = this.chunkText(combined);
+        for (let i = 0; i < chunks.length; i++) {
+            const chunk = chunks[i];
+            const embedding = await this.embeddingService.embed(chunk);
+            const exchangeChunk: Exchange = {
+                type: 'exchange',
+                chatId,
+                user: userMessage,
+                assistant: assistantMessage,
+                combined: chunk,
+                chunkIndex: i,
+                totalChunks: chunks.length,
+                timestamp: Date.now(),
+                embedding
+            };
+            this.index.add(exchangeChunk, embedding);
+        }
+        await this.saveIndex();
+        console.log(`📝 Added exchange (${combined.length} chars, split into ${chunks.length} chunks) for chat ${chatId}`);
+    }
+
+    async addFileChunk(chatId: string, fileName: string, chunkIndex: number, content: string): Promise<void> {
         const embedding = await this.embeddingService.embed(content);
         const chunk: FileChunk = {
             type: 'file',
+            chatId,
             fileName,
             chunkIndex,
             content,
@@ -68,12 +86,18 @@ export class HistoryStore {
         };
         this.index.add(chunk, embedding);
         await this.saveIndex();
-        console.log(`📎 Added file chunk ${fileName}[${chunkIndex}] (${content.length} chars)`);
+        console.log(`📎 Added file chunk ${fileName}[${chunkIndex}] (${content.length} chars) for chat ${chatId}`);
     }
 
-    async search(query: string, topK: number = 5): Promise<SearchResult[]> {
+    async search(query: string, currentChatId: string, topK: number = 10): Promise<SearchResult[]> {
         const queryVec = await this.embeddingService.embed(query);
-        return this.index.search(queryVec, topK);
+        // Поиск всех релевантных чанков (до topK * 2, чтобы потом отфильтровать)
+        let results = this.index.search(queryVec, topK * 2);
+        // Фильтруем: исключаем чанки из текущего чата
+        results = results.filter(r => r.item.chatId !== currentChatId);
+        // Оставляем topK лучших
+        results.sort((a, b) => b.similarity - a.similarity);
+        return results.slice(0, topK);
     }
 
     async clear(): Promise<void> {

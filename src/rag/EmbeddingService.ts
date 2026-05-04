@@ -1,4 +1,3 @@
-// src/rag/EmbeddingService.ts
 import { IEmbeddingService } from './types.js';
 import { RealEmbeddingService } from './RealEmbeddingService.js';
 

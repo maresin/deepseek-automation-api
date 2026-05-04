@@ -16,7 +16,6 @@ export class RealEmbeddingService implements IEmbeddingService {
 
     private async init() {
         console.log('🔄 Loading embedding model (Xenova/all-MiniLM-L6-v2)...');
-        // Динамический импорт ES-модуля внутри async функции
         const { pipeline } = await import('@xenova/transformers');
         this.embedder = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
         console.log('✅ Embedding model ready');
@@ -25,7 +24,6 @@ export class RealEmbeddingService implements IEmbeddingService {
     async embed(text: string): Promise<number[]> {
         if (!this.embedder) throw new Error('Embedder not initialized');
         const result = await this.embedder(text, { pooling: 'mean', normalize: true });
-        // result.data is Float32Array, convert to number[]
         return Array.from(result.data);
     }
 }

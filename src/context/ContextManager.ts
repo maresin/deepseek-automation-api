@@ -9,12 +9,11 @@ export class ContextManager {
     private maxChars: number;
     private snapshotReserveRatio: number;
     private totalChars: number = 0;
-    private snapshotFilePath: string | null = null;    
     private lastSnapshot: string = '';
     private lastSnapshotChars: number = 0;
     private lastSnapshotPercent: number = 0;
     private snapshotCreatedForSession: boolean = false;
-    private isCreatingSnapshot: boolean = false; // флаг для предотвращения рекурсии
+    private isCreatingSnapshot: boolean = false;
     private snapshots: Map<string, { path: string; timestamp: number; size: number }> = new Map();
     private readonly SNAPSHOT_70_KEY = 'snapshot_70';
     private readonly SNAPSHOT_90_KEY = 'snapshot_90';
@@ -88,8 +87,7 @@ export class ContextManager {
             this.lastSnapshot = snapshot;
             this.lastSnapshotChars = snapshot.length;
             this.lastSnapshotPercent = percent;
-            console.log(`💾 Snapshot metadata saved (${snapshot.length} chars) at ${percent}%`);
-        } catch (e) { console.warn('Failed to save snapshot metadata:', e); }
+        } catch (e) {}
     }
 
     async updateStats(addedChars: number): Promise<void> {
@@ -98,16 +96,19 @@ export class ContextManager {
         const percent = Math.round(this.totalChars / this.maxChars * 100);
         console.log(`📏 Context size: ${this.totalChars} / ${this.maxChars} chars (${percent}%) [+${addedChars}]`);
 
-        // Автоматический снимок при 70% – только если не создаём снимок в данный момент
         if (percent >= 70 && !this.snapshotCreatedForSession && !this.isCreatingSnapshot) {
             console.log(`📸 Context reached ${percent}%, creating snapshot for this session...`);
             await this.createSessionSnapshot();
             this.snapshotCreatedForSession = true;
         }
+
+        if (percent >= 90) {
+            this.client.needTransition = true;
+            console.log(`⚠️ Context at ${percent}% – transition flagged`);
+        }
     }
 
     private async createSessionSnapshot(): Promise<void> {
-        // Проверяем, существует ли уже снимок 70%
         if (this.snapshots.has(this.SNAPSHOT_70_KEY)) {
             console.log(`ℹ️ Snapshot 70% already exists, skipping creation`);
             return;
@@ -150,7 +151,6 @@ export class ContextManager {
         }
     }
 
-    // Создание снимка при переходе (90%)
     public async createTransitionSnapshot(): Promise<string | null> {
         this.isCreatingSnapshot = true;
         try {
@@ -160,7 +160,7 @@ export class ContextManager {
                 return null;
             }
             const snapshotPrompt = fs.readFileSync(snapshotPromptPath, 'utf-8');
-            console.log('📸 Creating transition snapshot (90%)...');
+            console.log('📸 Creating transition snapshot (90-95%)...');
             const wasDeepThink = await this.client.featureToggles.isDeepThinkEnabled();
             if (!wasDeepThink) await this.client.featureToggles.setDeepThink(true);
             const snapshotContent = await this.client.executePipeline({ text: snapshotPrompt, skipStatsUpdate: false });
@@ -177,7 +177,6 @@ export class ContextManager {
             }
             const filePath = path.join(process.cwd(), 'uploads', `snapshot_90_${Date.now()}.txt`);
             fs.writeFileSync(filePath, snapshot, 'utf-8');
-            // Удаляем старый снимок 90, если есть
             if (this.snapshots.has(this.SNAPSHOT_90_KEY)) {
                 const old = this.snapshots.get(this.SNAPSHOT_90_KEY)!;
                 try { if (fs.existsSync(old.path)) fs.unlinkSync(old.path); } catch(e) {}
@@ -195,7 +194,6 @@ export class ContextManager {
         }
     }
 
-    // Получить путь к самому свежему снимку
     public getLatestSnapshotPath(): string | null {
         let latest = null;
         let latestTime = 0;
@@ -206,6 +204,12 @@ export class ContextManager {
             }
         }
         return latest;
+    }
+
+    public canCreateTransitionSnapshot(additionalChars: number): boolean {
+        const newTotal = this.totalChars + additionalChars;
+        const newPercent = (newTotal / this.maxChars) * 100;
+        return newPercent >= 90 && newPercent <= 95;
     }
 
     async canUploadFile(fileSizeChars: number): Promise<boolean> {
@@ -232,13 +236,6 @@ export class ContextManager {
             this.lastSnapshotPercent = 0;
         }
         this.snapshotCreatedForSession = false;
-        // При сбросе контекста (новый чат) удаляем старый снимок 70%, т.к. он больше не актуален
-        if (this.snapshots.has(this.SNAPSHOT_70_KEY)) {
-            const old = this.snapshots.get(this.SNAPSHOT_70_KEY)!;
-            try { if (fs.existsSync(old.path)) fs.unlinkSync(old.path); } catch(e) {}
-            this.snapshots.delete(this.SNAPSHOT_70_KEY);
-            console.log(`🧹 Removed obsolete 70% snapshot`);
-        }
         this.saveStats();
         console.log(`🔄 Context reset, new size: ${this.totalChars} chars`);
     }
@@ -256,44 +253,12 @@ export class ContextManager {
             this.lastSnapshotChars = 0;
             this.lastSnapshotPercent = 0;
             this.snapshotCreatedForSession = false;
-            console.log('🧹 Context data files deleted and memory reset');
+            console.log('🧹 All context data files deleted and memory reset');
         } catch (e) {}
     }
 
     async getSnapshot(): Promise<string> {
         if (!this.lastSnapshot) this.loadSnapshotMetadata();
         return this.lastSnapshot;
-    }
-
-    // Замена файла снимка (используется при переходе)
-    public async replaceSnapshotFile(newFilePath: string): Promise<void> {
-        if (this.snapshotFilePath && this.snapshotFilePath !== newFilePath && fs.existsSync(this.snapshotFilePath)) {
-            try {
-                fs.unlinkSync(this.snapshotFilePath);
-                console.log(`🧹 Deleted old snapshot: ${this.snapshotFilePath}`);
-            } catch(e) {}
-        }
-        this.snapshotFilePath = newFilePath;
-        // Обновляем метаданные (текст снимка)
-        try {
-            const content = fs.readFileSync(newFilePath, 'utf-8');
-            this.lastSnapshot = content;
-            this.lastSnapshotChars = content.length;
-            this.saveSnapshotMetadata(content, this.lastSnapshotPercent);
-        } catch(e) {}
-        console.log(`📸 Snapshot replaced with: ${newFilePath}`);
-    }
-
-    // Возвращает путь к актуальному файлу снимка (если есть)
-    public getSnapshotFilePath(): string | null {
-        if (this.snapshotFilePath && fs.existsSync(this.snapshotFilePath)) {
-            return this.snapshotFilePath;
-        }
-        if (this.lastSnapshot && this.lastSnapshot.length > 0) {
-            this.snapshotFilePath = path.join(process.cwd(), 'uploads', `session_snapshot_${Date.now()}.txt`);
-            fs.writeFileSync(this.snapshotFilePath, this.lastSnapshot, 'utf-8');
-            return this.snapshotFilePath;
-        }
-        return null;
     }
 }

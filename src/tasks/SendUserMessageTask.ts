@@ -24,19 +24,53 @@ export class SendUserMessageTask extends Task<string> {
         }
     }
 
-    private getApiKey(): string {
-        return (global as any).currentApiKey || 'default-api-key';
+    private async indexFileIfNeeded(client: DeepSeekClient): Promise<void> {
+        // Безусловно проверяем, есть ли файл и включён ли RAG
+        if (!this.filePath) {
+            console.log('🔍 indexFileIfNeeded: no file path, skipping');
+            return;
+        }
+        if (process.env.ENABLE_RAG !== 'true') {
+            console.log('🔍 indexFileIfNeeded: RAG not enabled, skipping');
+            return;
+        }
+        const apiKey = (global as any).currentApiKey;
+        if (!apiKey) {
+            console.log('🔍 indexFileIfNeeded: no apiKey, skipping');
+            return;
+        }
+        console.log(`🔍 Indexing file: ${this.filePath} for chat ${client.currentChatId}`);
+        try {
+            const { getHistoryStore } = require('../../dist/rag/init.js');
+            const store = await getHistoryStore(apiKey);
+            const fileContent = fs.readFileSync(this.filePath, 'utf-8');
+            const chunkSize = parseInt(process.env.RAG_CHUNK_SIZE || '2000', 10);
+            const chunks: string[] = [];
+            for (let i = 0; i < fileContent.length; i += chunkSize) {
+                chunks.push(fileContent.slice(i, i + chunkSize));
+            }
+            console.log(`🔍 File ${path.basename(this.filePath)} split into ${chunks.length} chunks (size ${chunkSize})`);
+            for (let i = 0; i < chunks.length; i++) {
+                await store.addFileChunk(client.currentChatId, path.basename(this.filePath), i, chunks[i]);
+            }
+            console.log(`📎 Indexed ${chunks.length} chunks from file ${path.basename(this.filePath)} for chat ${client.currentChatId}`);
+        } catch (err) {
+            console.error('❌ Failed to index file chunks:', err);
+        }
     }
 
     async execute(client: DeepSeekClient): Promise<string> {
-        // Отложенный переход по флагу (достигнут 90%)
+        // 1. Индексация файла (всегда, если файл есть и RAG включён)
+        await this.indexFileIfNeeded(client);
+
+        // 2. Проверка отложенного перехода
         if (client.needTransition) {
-            console.log('🚦 Performing pending transition due to high context usage');
+            console.log('🚦 needTransition flag set, performing transition...');
             await this.performTransition(client);
             client.needTransition = false;
         }
 
-        // Системный промпт (если ещё не отправлен)
+        // 3. Системный промпт
         if (!client.isSystemPromptSent() && client.getSystemPromptText()) {
             console.log('📌 Sending system prompt before user message...');
             const systemPromptText = client.getSystemPromptText()!;
@@ -45,15 +79,31 @@ export class SendUserMessageTask extends Task<string> {
             console.log('✅ System prompt sent and confirmed');
         }
 
+        // 4. Проверка, влезает ли сообщение/файл в контекст
+        let requiredChars = this.text.length;
+        if (this.filePath) {
+            requiredChars += this.getFileSizeInChars(this.filePath);
+        }
+        const stats = await client.contextManager.getStats();
+        const currentTotal = stats.totalChars;
+        const maxChars = stats.maxChars;
+        const wouldBeTotal = currentTotal + requiredChars;
+        const wouldBePercent = (wouldBeTotal / maxChars) * 100;
+
+        if (wouldBePercent > 90) {
+            console.log(`📊 Would be ${wouldBePercent.toFixed(1)}% after adding message. Initiating transition.`);
+            if (wouldBePercent <= 95 && client.contextManager.canCreateTransitionSnapshot(requiredChars)) {
+                console.log('📸 Creating transition snapshot (90-95%)...');
+                await client.contextManager.createTransitionSnapshot();
+            } else {
+                console.log('⚠️ Would exceed 95% – skipping snapshot creation, using existing snapshot.');
+            }
+            await this.performTransition(client);
+            return await this.execute(client);
+        }
+
+        // 5. Отправка сообщения
         try {
-            let requiredChars = this.text.length;
-            if (this.filePath) {
-                requiredChars += this.getFileSizeInChars(this.filePath);
-            }
-            const canFit = await client.contextManager.canUploadFile(requiredChars);
-            if (!canFit) {
-                throw new NeedTransitionError(`Not enough context space for this message (need ${requiredChars} chars)`);
-            }
             const response = await client.executePipeline({
                 text: this.text,
                 filePath: this.filePath,
@@ -73,60 +123,26 @@ export class SendUserMessageTask extends Task<string> {
 
     private async performTransition(client: DeepSeekClient): Promise<void> {
         console.log('🔄 Starting transition to new chat due to context limit...');
-
-        // 1. Создаём снимок (всегда)
-        const snapshotPromptPath = path.join(process.cwd(), 'prompts', 'snapshot_prompt.txt');
-        if (!fs.existsSync(snapshotPromptPath)) {
-            throw new Error('Snapshot prompt file not found');
-        }
-        const snapshotPrompt = fs.readFileSync(snapshotPromptPath, 'utf-8');
-        console.log('📸 Creating fresh snapshot for transition...');
-        const wasDeepThink = await client.featureToggles.isDeepThinkEnabled();
-        if (!wasDeepThink) await client.featureToggles.setDeepThink(true);
-        const snapshotContent = await client.executePipeline({ text: snapshotPrompt, skipStatsUpdate: false });
-        if (!wasDeepThink) await client.featureToggles.setDeepThink(false);
-        if (!snapshotContent || snapshotContent.trim().length === 0) {
-            throw new Error('Failed to create snapshot: empty response');
+        const latestSnapshot = client.contextManager.getLatestSnapshotPath();
+        if (!latestSnapshot) {
+            throw new Error('No snapshot available for transition');
         }
 
-        const snapshotFileName = `transition_snapshot_${Date.now()}.txt`;
-        const snapshotFilePath = path.join(process.cwd(), 'uploads', snapshotFileName);
-        fs.writeFileSync(snapshotFilePath, snapshotContent, 'utf-8');
-        console.log(`💾 New transition snapshot saved: ${snapshotFilePath} (${snapshotContent.length} chars)`);
-
-        // 2. Заменяем старый снимок
-        await client.contextManager.replaceSnapshotFile(snapshotFilePath);
-
-        // 3. Создаём новый чат и сбрасываем контекст
         await client.chatController.newChat();
         client.setChatStarted(false);
         client.setSystemPromptSent(false);
         await client.contextManager.resetContext();
 
-        // 4. Загружаем снимок (всегда)
         const uploadPromptPath = path.join(process.cwd(), 'prompts', 'snapshot_upload_prompt.txt');
         let uploadPrompt = "Here is the context snapshot of our previous session (attached file). Please accept it and confirm by replying 'OK'.";
         if (fs.existsSync(uploadPromptPath)) {
             uploadPrompt = fs.readFileSync(uploadPromptPath, 'utf-8');
         }
         console.log('📤 Uploading snapshot file...');
-        const currentSnapshotPath = client.contextManager.getSnapshotFilePath();
-        if (!currentSnapshotPath) {
-            throw new Error('No snapshot file available for upload');
-        }
-        await client.executePipeline({ text: uploadPrompt, filePath: currentSnapshotPath, skipStatsUpdate: false });
+        await client.executePipeline({ text: uploadPrompt, filePath: latestSnapshot, skipStatsUpdate: false });
 
-        // 5. Удаляем временный файл
-        try { if (fs.existsSync(snapshotFilePath)) fs.unlinkSync(snapshotFilePath); } catch(e) {}
-
-        // 6. Устанавливаем флаг, что был переход в новый чат – теперь можно использовать RAG
         client.inRefreshedChat = true;
         client.needTransition = false;
-        console.log('✅ Sync transition completed, RAG mode activated for subsequent requests');
-
-        // Повторяем исходный запрос (если нужно)
-        if (this.text || this.filePath) {
-            console.log('🔄 Retrying original request after transition');
-        }
+        console.log('✅ Transition completed');
     }
 }

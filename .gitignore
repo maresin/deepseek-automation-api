@@ -19,7 +19,6 @@ context_snapshot.json
 
 # Uploaded temporary files
 uploads/
-rag_data/
 
 # Logs
 *.log
@@ -40,13 +39,13 @@ Thumbs.db
 .env.local
 
 # Other
-.ARCHIVE/
+.ARCHIVE
 collect.js
 directory_structure.txt
 garri_potter_i_tajjnaya_komnata_484_823.txt
 get_tree.py
 large_text.txt
-project_snapshot.txt
+project_snapshot*
 
 
 

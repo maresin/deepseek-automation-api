@@ -1,4 +1,3 @@
-// src/rag/init.ts
 import { getEmbeddingService } from './EmbeddingService.js';
 import { HistoryStore } from './HistoryStore.js';
 
@@ -23,7 +22,6 @@ export async function getHistoryStore(sessionId: string): Promise<HistoryStore> 
     return stores.get(sessionId)!;
 }
 
-// Для обратной совместимости с server.js
 if (typeof global !== 'undefined') {
     (global as any).__getHistoryStore = getHistoryStore;
 }

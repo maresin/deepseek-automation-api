@@ -130,6 +130,31 @@ npm start
 
 The server runs on `http://localhost:3000`
 
+Before launching, MAKE SURE to create a `.env` file in the root directory. Most of the values should be left unchanged. It is necessary to enter the data specified during registration in the *DeepSeek* service - email and password.
+
+**Example of filling in the `.env` file**:  
+
+```text
+DEEPSEEK_EMAIL=<YOUR_EMAIL>
+DEEPSEEK_PASSWORD=<PASSWORD>
+DEEPSEEK_HEADLESS=false
+DEEPSEEK_SHOW_BROWSER=true
+DEEPSEEK_RESTORE_SESSION=false
+DEEPSEEK_STATE_PATH=./state.json
+DEEPSEEK_API_KEY_PATH=./.api-key
+DEEPSEEK_SYSTEM_PROMPT_PATH=./prompts/system_prompt.txt
+DEEPSEEK_SNAPSHOT_PROMPT_PATH=./prompts/snapshot_prompt.txt
+DEEPSEEK_CONTINUATION_PROMPT_PATH=./prompts/continuation_prompt.txt
+DEEPSEEK_SNAPSHOT_FILE=./context_snapshot.json
+DEEPSEEK_STATS_FILE=./context_stats.json
+DEEPSEEK_UPLOAD_DIR=./uploads
+PORT=3000
+DEEPSEEK_MAX_CONTEXT_CHARS=2400000
+DEEPSEEK_SNAPSHOT_THRESHOLD=0.75
+ENABLE_RAG=true
+RAG_DATA_DIR=./rag_data
+```
+
 ### Platform Notes
 
 | Platform | Notes |

@@ -5,14 +5,10 @@ const { getClientConfig } = require('../clientConfig');
 
 module.exports = async function registerRoute(req, res) {
     const { email, password } = req.body;
-    
     if (isReady() && bothFilesExist()) {
         return res.json({ api_key: getApiKey(), message: 'Session already exists' });
     }
-    
-    if (!bothFilesExist()) {
-        deleteSessionFiles();
-    }
+    if (!bothFilesExist()) deleteSessionFiles();
 
     const apiKey = generateApiKey();
     const systemPrompt = getSystemPrompt();

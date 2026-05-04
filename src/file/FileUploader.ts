@@ -27,17 +27,21 @@ export class FileUploader {
 
     async upload(filePath: string): Promise<void> {
         const fileSizeChars = this.getFileSizeInChars(filePath);
-        const can = await this.contextManager.canUploadFile(fileSizeChars);
-        if (!can) {
-            throw new NeedTransitionError(`File too large for current context, need transition (${fileSizeChars} chars required)`);
+        const stats = await this.contextManager.getStats();
+        const wouldBePercent = ((stats.totalChars + fileSizeChars) / stats.maxChars) * 100;
+        
+        if (wouldBePercent > 90) {
+            if (wouldBePercent <= 95 && this.contextManager.canCreateTransitionSnapshot(fileSizeChars)) {
+                await this.contextManager.createTransitionSnapshot();
+            }
+            throw new NeedTransitionError(`File would exceed context limit (${wouldBePercent.toFixed(1)}%). Need transition.`);
         }
+        
         console.log(`📎 File size: ${fileSizeChars} chars`);
-        const statsBefore = await this.contextManager.getStats();
-        console.log(`📊 [BEFORE] Context: ${statsBefore.totalChars} / ${statsBefore.maxChars} chars (${statsBefore.percent}%)`);
+        console.log(`📊 [BEFORE] Context: ${stats.totalChars} / ${stats.maxChars} chars (${stats.percent}%)`);
         await this.chatController.attachFile(filePath);
-        // НЕ обновляем статистику здесь – это делает executePipeline
-        const statsAfter = await this.contextManager.getStats();
-        console.log(`📊 [AFTER] Context: ${statsAfter.totalChars} / ${statsAfter.maxChars} chars (${statsAfter.percent}%)`);
+        const afterStats = await this.contextManager.getStats();
+        console.log(`📊 [AFTER] Context: ${afterStats.totalChars} / ${afterStats.maxChars} chars (${afterStats.percent}%)`);
         console.log(`📎 File attached: ${filePath}`);
     }
 }

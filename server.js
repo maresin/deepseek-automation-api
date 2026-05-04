@@ -121,7 +121,6 @@ const PORT = process.env.PORT || 3000;
 
 if (process.env.ENABLE_RAG === 'true') {
     console.log('✅ RAG module enabled (real embeddings with Xenova/all-MiniLM-L6-v2)');
-    // Добавляем инициализацию RAG
     const { initRAG } = require('./dist/rag/init.js');
     initRAG().catch(err => console.error('RAG init failed:', err));
 }
