@@ -128,11 +128,19 @@ export class SendUserMessageTask extends Task<string> {
             throw new Error('No snapshot available for transition');
         }
 
+        // Создаём новый чат через интерфейс браузера
         await client.chatController.newChat();
+        
+        // ✅ Генерируем новый ID для перешедшего чата
+        client.currentChatId = Date.now().toString();
+        console.log(`🆕 New chat created with ID: ${client.currentChatId} (after transition)`);
+        
+        // Сбрасываем флаги состояния
         client.setChatStarted(false);
         client.setSystemPromptSent(false);
         await client.contextManager.resetContext();
 
+        // Загружаем снимок
         const uploadPromptPath = path.join(process.cwd(), 'prompts', 'snapshot_upload_prompt.txt');
         let uploadPrompt = "Here is the context snapshot of our previous session (attached file). Please accept it and confirm by replying 'OK'.";
         if (fs.existsSync(uploadPromptPath)) {
@@ -143,6 +151,6 @@ export class SendUserMessageTask extends Task<string> {
 
         client.inRefreshedChat = true;
         client.needTransition = false;
-        console.log('✅ Transition completed');
+        console.log('✅ Transition completed, RAG search will be active with new chat ID');
     }
 }

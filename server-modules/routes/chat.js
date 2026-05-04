@@ -41,35 +41,43 @@ module.exports = async function chatRoute(req, res) {
 
     let userText = userMessage ? userMessage.content : '';
 
-    // RAG: обогащение запроса (только после перехода, исключая текущий чат)
+    console.log(`🔍 RAG search: useSearchRAG=${useSearchRAG}, store=${!!store}, inRefreshedChat=${client.inRefreshedChat}, currentChatId=${client.currentChatId}`);
+    if (useSearchRAG && store) {
+        const results = await store.search(userText, client.currentChatId, 10);
+        console.log(`🔍 Search returned ${results.length} results`);
+    }
+
+    // --- RAG: обогащение запроса (только после перехода, с ограничением длины) ---
     if (useSearchRAG && userText) {
         try {
-            const results = await store.search(userText, client.currentChatId, 15);
+            const results = await store.search(userText, client.currentChatId, 5);
             if (results.length > 0) {
-                const exchangeMap = new Map();
+                const MAX_CONTEXT_CHARS = 1500;
+                let contextBlocks = [];
+                let currentLen = 0;
                 for (const r of results) {
+                    let block = '';
                     if (r.item.type === 'exchange') {
-                        const key = `${r.item.user}||${r.item.assistant}`;
-                        if (!exchangeMap.has(key)) exchangeMap.set(key, []);
-                        exchangeMap.get(key).push(r.item);
+                        // Берём только последние 300 символов ответа ассистента
+                        const snippet = r.item.assistant.slice(-300);
+                        block = `Previous: ...${snippet}`;
+                    } else if (r.item.type === 'file') {
+                        block = `[File ${r.item.fileName}]: ${r.item.content.slice(0, 200)}`;
                     }
-                }
-                const contextBlocks = [];
-                for (const chunks of exchangeMap.values()) {
-                    chunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
-                    const fullCombined = chunks.map(c => c.combined).join('');
-                    const user = chunks[0].user;
-                    const assistant = chunks[0].assistant;
-                    contextBlocks.push(`User: ${user}\nAssistant: ${assistant}\n---\n${fullCombined}`);
-                }
-                for (const r of results) {
-                    if (r.item.type === 'file') {
-                        contextBlocks.push(`[From file ${r.item.fileName}]: ${r.item.content.substring(0, 800)}`);
-                    }
+                    if (currentLen + block.length <= MAX_CONTEXT_CHARS) {
+                        contextBlocks.push(block);
+                        currentLen += block.length;
+                    } else break;
                 }
                 if (contextBlocks.length) {
-                    userText = `Relevant previous conversation:\n${contextBlocks.join('\n---\n')}\n\n---\n\n${userText}`;
-                    console.log(`📚 Enriched prompt with ${exchangeMap.size} exchange(s) and ${results.filter(r => r.item.type === 'file').length} file chunk(s)`);
+                    const contextSection = `Relevant previous conversation:\n${contextBlocks.join('\n---\n')}\n\n---\n\n`;
+                    // Не добавляем, если общий размер превышает 4000 символов
+                    if (userText.length + contextSection.length < 4000) {
+                        userText = contextSection + userText;
+                        console.log(`📚 Enriched prompt with ${contextBlocks.length} short fragment(s) (total ${currentLen} chars)`);
+                    } else {
+                        console.log(`⚠️ User message too long (${userText.length} chars), skipping enrichment`);
+                    }
                 }
             }
         } catch (err) {
