@@ -42,14 +42,21 @@ export class SendUserMessageTask extends Task<string> {
         client.setSystemPromptSent(false);
         await client.contextManager.resetContext();
 
-        const apiKey = this.getApiKey();
-        chatRoute.setUseRAG(apiKey, true);
+        // Устанавливаем флаг RAG для этой сессии
+        const apiKey = (global as any).currentApiKey || 'default-api-key';
+        const { setUseRAG } = require('../../server-modules/routes/chat.js');
+        setUseRAG(apiKey, true);
 
-        const ragInstruction = `You are continuing a conversation that was previously too long. 
-You no longer have the full history in your context window. 
-However, you can use the tool "search_conversation" to retrieve relevant parts of the history. 
-When you need to recall previous information, call this tool with a query.`;
+        // Отправляем системный промпт из файла (вместо короткого сообщения)
+        const systemPromptPath = path.join(process.cwd(), 'prompts', 'rag_system_prompt.txt');
+        let ragInstruction = "You can use search_conversation tool to retrieve history.";
+        if (fs.existsSync(systemPromptPath)) {
+            ragInstruction = fs.readFileSync(systemPromptPath, 'utf-8');
+        } else {
+            console.warn('rag_system_prompt.txt not found, using default');
+        }
         await client.executePipeline({ text: ragInstruction, skipStatsUpdate: false });
+
         console.log('✅ RAG mode activated');
     }
 
@@ -97,14 +104,9 @@ When you need to recall previous information, call this tool with a query.`;
     }
 
     private async performTransition(client: DeepSeekClient): Promise<void> {
-        if (process.env.ENABLE_RAG === 'true') {
-            await this.initRAGMode(client);
-            return;
-        }
-
-        // Оригинальная логика со снимками (если RAG выключен)
         console.log('🔄 Starting transition to new chat due to context limit...');
 
+        // 1. Создаём снимок (всегда)
         const snapshotPromptPath = path.join(process.cwd(), 'prompts', 'snapshot_prompt.txt');
         if (!fs.existsSync(snapshotPromptPath)) {
             throw new Error('Snapshot prompt file not found');
@@ -124,13 +126,16 @@ When you need to recall previous information, call this tool with a query.`;
         fs.writeFileSync(snapshotFilePath, snapshotContent, 'utf-8');
         console.log(`💾 New transition snapshot saved: ${snapshotFilePath} (${snapshotContent.length} chars)`);
 
+        // 2. Заменяем старый снимок
         await client.contextManager.replaceSnapshotFile(snapshotFilePath);
 
+        // 3. Создаём новый чат и сбрасываем контекст
         await client.chatController.newChat();
         client.setChatStarted(false);
         client.setSystemPromptSent(false);
         await client.contextManager.resetContext();
 
+        // 4. Загружаем снимок (всегда)
         const uploadPromptPath = path.join(process.cwd(), 'prompts', 'snapshot_upload_prompt.txt');
         let uploadPrompt = "Here is the context snapshot of our previous session (attached file). Please accept it and confirm by replying 'OK'.";
         if (fs.existsSync(uploadPromptPath)) {
@@ -143,9 +148,25 @@ When you need to recall previous information, call this tool with a query.`;
         }
         await client.executePipeline({ text: uploadPrompt, filePath: currentSnapshotPath, skipStatsUpdate: false });
 
+        // 5. Удаляем временный файл
         try { if (fs.existsSync(snapshotFilePath)) fs.unlinkSync(snapshotFilePath); } catch(e) {}
 
         client.needTransition = false;
-        console.log('✅ Sync transition completed, retrying original request');
+        console.log('✅ Sync transition completed');
+
+        // 6. Если RAG включён, активируем RAG-режим (это не отменяет снимок, а добавляет поиск)
+        if (process.env.ENABLE_RAG === 'true') {
+            const apiKey = (global as any).currentApiKey;
+            if (apiKey) {
+                console.log('🔧 Activating RAG mode for session', apiKey);
+                const { setUseRAG } = require('../../server-modules/routes/chat.js');
+                setUseRAG(apiKey, true);
+            }
+        }
+
+        // Повторяем исходный запрос (если нужно)
+        if (this.text || this.filePath) {
+            console.log('🔄 Retrying original request after transition');
+        }
     }
 }

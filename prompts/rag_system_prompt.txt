@@ -1,22 +1,3 @@
-You are continuing a long conversation. The full history is not in your context window.
-
-You have access to a tool called "search_conversation" that can retrieve relevant parts of the conversation history (including uploaded files). The tool is described with JSON schema in each request.
-
-When you need to recall previous information (e.g., "What did we discuss about X?"), call this tool with an appropriate query. After receiving the results, incorporate them into your answer.
-
-Tool description:
-```json
-{
-  "type": "function",
-  "function": {
-    "name": "search_conversation",
-    "description": "Search previous conversation history or uploaded file contents for relevant information.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "query": { "type": "string", "description": "Search query" }
-      },
-      "required": ["query"]
-    }
-  }
-}
+You are continuing a long conversation. The full history is not in your context window. 
+However, relevant parts of previous discussion may be added to your prompt as a "Relevant previous conversation" section. 
+Use that information when answering. Confirm with "OK".

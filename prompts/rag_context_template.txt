@@ -1,0 +1,6 @@
+Relevant information from conversation history:
+{{#each results}}
+--- 
+User: {{this.userQuery}}
+Assistant: {{this.assistantResponse}}
+{{/each}}
