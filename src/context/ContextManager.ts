@@ -90,11 +90,12 @@ export class ContextManager {
         } catch (e) {}
     }
 
-    async updateStats(addedChars: number): Promise<void> {
-        this.totalChars += addedChars;
+    async updateStats(addedChars: number, multiplier: number = 1): Promise<void> {
+        const effectiveChars = Math.floor(addedChars * multiplier);
+        this.totalChars += effectiveChars;
         this.saveStats();
         const percent = Math.round(this.totalChars / this.maxChars * 100);
-        console.log(`📏 Context size: ${this.totalChars} / ${this.maxChars} chars (${percent}%) [+${addedChars}]`);
+        console.log(`📏 Context size: ${this.totalChars} / ${this.maxChars} chars (${percent}%) [+${effectiveChars} (raw ${addedChars} × ${multiplier})]`);
 
         if (percent >= 70 && !this.snapshotCreatedForSession && !this.isCreatingSnapshot) {
             console.log(`📸 Context reached ${percent}%, creating snapshot for this session...`);

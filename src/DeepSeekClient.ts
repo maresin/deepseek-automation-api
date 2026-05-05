@@ -176,7 +176,14 @@ export class DeepSeekClient {
             if (filePath) {
                 addedChars += this.getFileSizeInChars(filePath);
             }
-            await this.contextManager.updateStats(addedChars);
+            const isDeepThink = await this.featureToggles.isDeepThinkEnabled();
+            let multiplier = 1;
+            if (isDeepThink) {
+                const raw = process.env.DEEPSEEK_DEEPTHINK_MULTIPLIER;
+                const parsed = parseFloat(raw || '');
+                multiplier = isNaN(parsed) ? 2.5 : parsed;
+            }
+            await this.contextManager.updateStats(addedChars, multiplier);
             const stats = await this.contextManager.getStats();
             if (stats.percent >= 90) {
                 this.needTransition = true;
