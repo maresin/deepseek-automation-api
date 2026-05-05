@@ -1,3 +1,4 @@
+// server-modules/state.js
 let globalClient = null;
 let globalScheduler = null;
 
@@ -15,7 +16,7 @@ function getScheduler() {
 }
 
 function isReady() {
-    return globalClient !== null;   // больше не проверяем scheduler
+    return globalClient !== null;
 }
 
 module.exports = {

@@ -1,226 +1,245 @@
 # DeepSeek Automation API
 
-OpenAI-compatible API server for DeepSeek chat with tool calling, web search, file upload, DeepThink (R1) support, session recovery, automatic context management, clipboard isolation, and **Retrieval-Augmented Generation (RAG)** for long‑term conversation memory.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Why This Exists
+OpenAI‑compatible API server for **DeepSeek** (free web version) with tool calling, web search, file upload, DeepThink (R1), session recovery, automatic context management, clipboard isolation, and **optional Retrieval-Augmented Generation (RAG)** for long‑term conversation memory.
 
-DeepSeek (https://chat.deepseek.com/) is a powerful free AI chat service with advanced features. However, the official DeepSeek API is paid. This project creates an **OpenAI‑compatible API server** that automates the DeepSeek web interface using Playwright, giving you programmatic access **for free**.
-
-**What makes this different:**
-- Costs nothing (uses the free web interface)
-- Supports all web features (DeepThink, web search, file uploads)
-- Maintains conversation context automatically
-- Can recover interrupted conversations from history
-- **Automatically continues long conversations** when the context limit is reached (by transferring the conversation to a new chat)
-- **Never interferes with your system clipboard**
-- **Optional RAG module** for searching through past conversations (even after context reset)
-
-**The trade‑off:** Because each request uses a real browser (not a direct API), responses take 15–30 seconds. This tool is designed for programmatic tasks where latency is acceptable – batch processing, documentation generation, code analysis, CI/CD pipelines – not for real-time chat applications.
+> **Why?** DeepSeek offers a powerful free web interface, but no free API. This project automates the web UI using Playwright, giving you a local OpenAI‑compatible API – **completely free**.
 
 ---
 
 ## Table of Contents
 
-- [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Installation](#installation)
 - [Configuration (.env)](#configuration-env)
 - [API Endpoints](#api-endpoints)
 - [Retrieval-Augmented Generation (RAG)](#retrieval-augmented-generation-rag)
 - [Automatic Context Management & Snapshots](#automatic-context-management--snapshots)
+- [Known Limitations & Caveats](#known-limitations--caveats)
 - [Examples](#examples)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
-## Installation
-
-### Prerequisites
-
-- **Node.js** 16 or higher
-- **npm** 8 or higher
-- **Internet connection** (for initial browser download)
-- **DeepSeek account** (free at https://chat.deepseek.com/)
-
-### Steps
+## Quick Start
 
 ```bash
-# Clone the repository
 git clone https://github.com/maresin/deepseek-automation-api.git
 cd deepseek-automation-api
-
-# Install dependencies
+cp .env.example .env                     # edit with your DeepSeek credentials
 npm install
-
-# Build TypeScript
 npm run build
-
-# Install Chromium browser (Playwright)
-npm run postinstall
-
-# Copy environment template and edit
-cp .env.example .env   # (see Configuration section below)
-
-# Start the server
+npm run postinstall                      # install Chromium browser
 npm start
 ```
 
-Alternatively, use the provided build script:
-
-```bash
-chmod +x scripts/build-and-run.sh
-./scripts/build-and-run.sh
-```
-
-The server runs on `http://localhost:3000` by default.
-
----
-
-## Quick Start
-
-### 1. Register and get an API key
+Then register and chat:
 
 ```bash
 curl -X POST http://localhost:3000/v1/register \
   -H "Content-Type: application/json" \
   -d '{"email":"your@email.com","password":"your_password"}'
-```
 
-Response:
-```json
-{
-  "api_key": "deepseek_1734567890123_abc123def456",
-  "message": "Store this API key securely."
-}
-```
-
-### 2. Send a chat message
-
-```bash
 curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer deepseek_1734567890123_abc123def456" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
 ---
 
+## Installation
+
+### Prerequisites
+- Node.js **16+** and npm
+- A free DeepSeek account (https://chat.deepseek.com)
+
+### Steps
+
+```bash
+npm install               # install dependencies
+npm run build             # compile TypeScript
+npm run postinstall       # download Chromium (~300 MB)
+```
+
+Create a `.env` file (see [Configuration](#configuration-env) below). Then:
+
+```bash
+npm start
+```
+
+The server runs on `http://localhost:3000`.
+
+---
+
 ## Configuration (.env)
 
-Create a `.env` file in the project root. Below are all available variables.
+Create a `.env` file in the project root. Below is a minimal example:
+
+```ini
+PORT=3000
+DEEPSEEK_EMAIL=your@email.com
+DEEPSEEK_PASSWORD=your_password
+RESTORE_SESSION=false
+
+# RAG features
+ENABLE_RAG=true
+RAG_CHUNK_SIZE=2000
+RAG_FRAGMENT_MAX_CHARS=1200
+DEEPSEEK_DEEPTHINK_MULTIPLIER=2.5
+
+# Context limit (characters)
+DEEPSEEK_MAX_CONTEXT_CHARS=2400000
+```
+
+Full variable reference:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PORT` | Server port | `3000` |
 | `RESTORE_SESSION` | Restore last chat from browser history on startup | `false` |
-| `DEEPSEEK_EMAIL` | Email for auto‑registration (optional) | – |
-| `DEEPSEEK_PASSWORD` | Password for auto‑registration (optional) | – |
-| **RAG (Retrieval-Augmented Generation)** | | |
-| `ENABLE_RAG` | Enable RAG module (indexing and search) | `false` |
-| `RAG_CHUNK_SIZE` | Characters per chunk for embedding (max ~2000 for MiniLM) | `2000` |
-| `RAG_FRAGMENT_MAX_CHARS` | Max characters of each retrieved fragment shown to the model | `1200` |
-| `DEEPSEEK_DEEPTHINK_MULTIPLIER` | Multiply response length by this when DeepThink is on (rough token estimate) | `2.5` |
-| **Context limits** | | |
-| `DEEPSEEK_MAX_CONTEXT_CHARS` | Maximum context size in characters before auto‑transition | `2400000` |
-| **File paths** | | |
-| `DEEPSEEK_STATE_PATH` | Path to browser state file | `./state.json` |
-| `DEEPSEEK_API_KEY_PATH` | Path to stored API key | `./.api-key` |
-| `DEEPSEEK_SYSTEM_PROMPT_PATH` | Path to system prompt file | `./prompts/system_prompt.txt` |
+| `DEEPSEEK_EMAIL` | Email for auto‑login (optional) | – |
+| `DEEPSEEK_PASSWORD` | Password for auto‑login (optional) | – |
+| `ENABLE_RAG` | Enable RAG (embedding + search) | `false` |
+| `RAG_CHUNK_SIZE` | Characters per chunk (fits embedding model limit) | `2000` |
+| `RAG_FRAGMENT_MAX_CHARS` | Max length of retrieved text shown to the model | `1200` |
+| `DEEPSEEK_DEEPTHINK_MULTIPLIER` | Multiply response length when DeepThink is on | `2.5` |
+| `DEEPSEEK_MAX_CONTEXT_CHARS` | Max context size before auto‑transition | `2400000` |
+| `DEEPSEEK_STATE_PATH` | Browser state file path | `./state.json` |
+| `DEEPSEEK_API_KEY_PATH` | API key storage path | `./.api-key` |
+| `DEEPSEEK_SYSTEM_PROMPT_PATH` | System prompt file path | `./prompts/system_prompt.txt` |
+
+> **Note:** The RAG embedding model (`Xenova/all-MiniLM-L6-v2`) is loaded on the first request – expect a few seconds delay.
 
 ---
 
 ## API Endpoints
 
-All endpoints are documented in the original README. Main ones:
+All endpoints follow the OpenAI API specification where applicable.
 
-- `POST /v1/register` – Create session and get API key.
-- `POST /v1/chat/completions` – Chat (OpenAI compatible).
-- `POST /v1/files/upload` – Upload a single file.
-- `POST /v1/chat/new` – Create a new chat (optionally restore last chat from history).
-- `GET /v1/settings/expert/status` – Get current expert/instant mode.
-- `GET /health` – Health check.
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/register` | Create session and get API key |
+| `POST` | `/v1/chat/completions` | Send a message (supports `tools`, `extra_body`) |
+| `POST` | `/v1/chat/new` | Create a new chat (optionally restore last chat) |
+| `POST` | `/v1/files/upload` | Upload a single file (PDF, image, text, code, etc.) |
+| `POST` | `/v1/files/upload-multiple` | Upload up to 10 files |
+| `GET` | `/v1/settings/expert/status` | Get current expert/instant mode |
+| `GET` | `/health` | Health check |
 
 ---
 
 ## Retrieval-Augmented Generation (RAG)
 
-### What it does
+When enabled, the API **stores every user–assistant exchange** (and file contents) in a local vector index. Later, when the conversation continues in a **reused chat** (automatic context transition or manual `restore: true`), the system searches the stored history for fragments relevant to the current query and adds them to the prompt.
 
-When enabled, the API stores every user‑assistant exchange (and file contents) in a vector index using a local embedding model (`Xenova/all-MiniLM-L6-v2`). Later, when the conversation continues in a **new browser chat** (after an automatic context transition or a manual `/v1/chat/new` with `restore: true`), the system searches the stored history for fragments relevant to the current query and adds them to the prompt.
+### When does RAG work?
 
-**Important:** The RAG search is **only active** when the current browser session corresponds to a restored or automatically continued chat.  
-- If you start a completely new chat (without restoring), the index is **not cleared** but the search will **exclude** entries from other chats (using a `chatId` filter).  
-- To force RAG to use only the current chat’s history, you would need to clear the index manually (not recommended).  
+- **After an automatic context transition** (when the chat reaches ~90% of the limit) → RAG becomes active. The new chat inherits the old `chatId`, so old index entries are **not** cleared.
+- **When you manually restore a chat** (`/v1/chat/new` with `{"restore": true}`) → RAG active.
+- **When you start a brand new chat** (`/v1/chat/new` with `{"restore": false}`) → **the entire index is cleared**. This is intentional: a fresh topic should not be polluted by old history.
 
-In practice, this means:  
-- **During a normal browser session (single chat):** RAG will not add any fragments because `inRefreshedChat = false`.  
-- **After an automatic context transition (90% limit reached):** RAG becomes active and will search through **previous** chats.  
-- **If you manually create a new chat with `restore: true`:** RAG will be active from the start because the restored chat retains the “refreshed” state.  
-- **If you create a new chat with `restore: false`:** RAG is inactive (`inRefreshedChat = false`) and the index from previous chats is not used.
+### Example scenario
 
-### What is indexed
+1. Start a conversation about **physics** (RAG inactive because it's the first chat).
+2. Chat long enough to trigger a context transition (or manually restore).
+3. Now ask: *“What did we say about quantum mechanics?”* – the model will receive relevant fragments from the previous exchanges.
+4. If you later start a **new, unrelated chat** (e.g., `curl -X POST /v1/chat/new`), the index is wiped – the model forgets the physics discussion.
 
-- Every user message + assistant response (combined into one string, then split into chunks).
-- File contents (split into chunks, each chunk separately indexed).
+### Performance notes
 
-### How search works
-
-- The user’s current question is embedded using the same local model.
-- The system finds the most similar chunks (cosine similarity) among all stored exchanges **from other chats** (current chat is excluded).
-- The corresponding assistant responses are extracted, truncated (keeping the beginning), and inserted into the prompt as a plain text block with a short instruction.
-
-### Performance considerations
-
-- The embedding model runs locally on CPU – first request may take a few seconds to load the model.
-- Linear search is used (no external FAISS), which is acceptable for up to several thousand chunks.
-- Chunk size is limited to `RAG_CHUNK_SIZE` (default 2000) to fit the embedding model’s token limit (512 tokens ≈ 2000 chars).
-
-### Example `.env` snippet for RAG
-
-```
-ENABLE_RAG=true
-RAG_CHUNK_SIZE=2000
-RAG_FRAGMENT_MAX_CHARS=1200
-DEEPSEEK_DEEPTHINK_MULTIPLIER=2.5
-```
+- Embedding model runs **locally on CPU** – initial load takes ~2–3 seconds, subsequent embeddings are faster.
+- Linear search is used (no external FAISS). Works well up to several thousand chunks.
+- Chunk size is kept at 2000 characters to respect the embedding model’s 512‑token limit.
 
 ---
 
 ## Automatic Context Management & Snapshots
 
-The API monitors the total character count of the conversation. When it reaches **70%** of the limit (`DEEPSEEK_MAX_CONTEXT_CHARS`), it creates a `snapshot_70` (a condensed summary). When the limit would be exceeded (>90%), it performs an automatic transition:
+The server monitors total character count. When it reaches **70%** of the limit, it creates a `snapshot_70` (a compact summary). When a new message would exceed **90%**:
 
-1. Creates a fresh snapshot (if the new total would be ≤95%) or uses the latest existing snapshot.
-2. Opens a new browser chat.
-3. Uploads the snapshot as a file.
-4. Resets the context counter.
-5. Continues the conversation.
+- If the new total would be **≤95%**, a fresh snapshot (`snapshot_90`) is created.
+- Then the browser opens a **new chat**, uploads the latest snapshot, and resets the context counter.
+- The user sees **no interruption** – the conversation continues seamlessly.
 
-The user does not need to do anything – the transition is seamless.
+---
+
+## Known Limitations & Caveats
+
+**Latency**  
+Each request takes **15–30 seconds** because it uses a real browser. Designed for batch tasks, not real‑time chat.
+
+**RAG index lifetime**  
+Starting a new chat with `restore: false` **permanently deletes all stored embeddings** (old history cannot be retrieved). Use `restore: true` if you want to keep the index.
+
+**DeepThink (R1) token consumption**  
+DeepThink generates internal reasoning that is not copied to the final answer but still consumes context. The server multiplies the response length by `DEEPSEEK_DEEPTHINK_MULTIPLIER` (default 2.5) to estimate real usage.
+
+**File uploads**  
+Supported types: PDF, images (PNG, JPG, JPEG), text files (TXT, MD, JSON, etc.), code files, office documents (DOC, DOCX, XLS, XLSX, PPT, PPTX).  
+Large files are split into chunks (size `RAG_CHUNK_SIZE`) for embedding.
+
+**Tool calling (function calling)**  
+The server passes `tools` to DeepSeek and returns `tool_calls` in the OpenAI format. It **does not execute** the tools – you must handle them on the client side.
+
+**Session recovery**  
+Session state is stored in `state.json`. If this file is lost or corrupted, you need to re‑register (`/v1/register`). Auto‑login via `.env` credentials can recover from scratch.
 
 ---
 
 ## Examples
 
-See the `examples/` folder for ready‑to‑run scripts (both JavaScript and Python).
+### Simple chat with RAG (after transition)
+
+```bash
+# First, create a chat and talk a lot (or trigger a context limit)
+curl -X POST /v1/chat/completions ... -d '{"messages":[{"role":"user","content":"Explain quantum entanglement"}]}'
+
+# After automatic transition, ask a follow‑up:
+curl -X POST /v1/chat/completions \
+  -H "Authorization: Bearer $KEY" \
+  -d '{"messages":[{"role":"user","content":"What were the key experiments?"}]}'
+# The answer will include information from the previous conversation.
+```
+
+### Manually restore a chat (keep RAG index)
+
+```bash
+curl -X POST /v1/chat/new \
+  -H "Authorization: Bearer $KEY" \
+  -d '{"restore": true}'
+```
+
+### Start a fresh chat (wipe RAG index)
+
+```bash
+curl -X POST /v1/chat/new \
+  -H "Authorization: Bearer $KEY" \
+  -d '{"restore": false}'
+```
+
+### Upload a file and ask about it
+
+```bash
+curl -X POST /v1/files/upload \
+  -H "Authorization: Bearer $KEY" \
+  -F "file=@document.pdf" \
+  -F "message=Summarize this document"
+```
 
 ---
 
 ## Troubleshooting
 
-### RAG search returns no results after transition
-
-- Ensure `ENABLE_RAG=true` and you have restarted the server.
-- Check that you have performed at least one exchange in the previous chat (so the index contains data).
-- If you manually created a new chat with `restore: false`, RAG will be inactive (`inRefreshedChat = false`). Use `restore: true` or wait for an automatic transition.
-
-### Long first response time
-
-- The embedding model is loaded on first request – subsequent requests are faster.
-- Browser automation is inherently slow (~15‑30 seconds per request).
-
-### Index files keep growing
-
-You can safely delete the `rag_data` folder to reset the index (all history will be lost).
+| Problem | Likely solution |
+|---------|------------------|
+| `eada-cpu not available` warning | Ignore – linear search fallback works. |
+| RAG search returns no results | Ensure `ENABLE_RAG=true`, you have performed previous exchanges, and you are not in a fresh chat (`restore: false`). |
+| Long first response (30+ seconds) | Normal – the embedding model loads. |
+| Browser window pops up | First run; log in manually once – state is saved. |
+| Session not restored after restart | Check that `state.json` and `.api-key` exist and are valid. Delete them and re‑register if needed. |
+| Context overflow infinite loop | The server automatically handles it. If you see repeated transitions, lower `DEEPSEEK_MAX_CONTEXT_CHARS` temporarily for testing. |
 
 ---
 

@@ -10,7 +10,6 @@ export class NewChatTask extends Task<void> {
     }
 
     async execute(client: DeepSeekClient): Promise<void> {
-        // Очистка папки uploads
         const uploadsDir = path.join(process.cwd(), 'uploads');
         if (fs.existsSync(uploadsDir)) {
             const files = fs.readdirSync(uploadsDir);
@@ -21,7 +20,6 @@ export class NewChatTask extends Task<void> {
             }
             console.log(`🧹 Cleaned uploads folder (${files.length} files)`);
         }
-        // Полная очистка контекстных данных
         await client.contextManager.clearAllContextData();
 
         await client.chatController.newChat();

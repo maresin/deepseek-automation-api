@@ -1,3 +1,4 @@
+// src/chat/ChatController.ts
 import { BrowserManager } from '../browser/BrowserManager.js';
 import { Selectors } from '../browser/Selectors.js';
 
@@ -15,13 +16,11 @@ export class ChatController {
         const page = this.browserManager.page!;
         await page.click(Selectors.textarea);
         if (message.length <= 50) {
-            // Короткие сообщения вводим посимвольно (опционально)
             for (const char of message) {
                 await page.keyboard.type(char);
                 await page.waitForTimeout(50);
             }
         } else {
-            // Длинные сообщения: прямая вставка без буфера обмена
             await page.keyboard.insertText(message);
             await page.waitForTimeout(200);
         }

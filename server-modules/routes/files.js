@@ -1,3 +1,4 @@
+// server-modules/routes/files.js
 const path = require('path');
 const fs = require('fs');
 const { getClient } = require('../state');
@@ -14,7 +15,6 @@ async function uploadSingle(req, res) {
     const message = req.body.message || "";
     const apiKey = req.headers.authorization?.replace('Bearer ', '');
     
-    // Устанавливаем глобальный apiKey для доступа из задачи
     global.currentApiKey = apiKey;
 
     const ext = path.extname(file.originalname);
@@ -31,7 +31,6 @@ async function uploadSingle(req, res) {
         return res.status(500).json({ error: err.message });
     }
 
-    // Сохраняем обмен в RAG
     if (process.env.ENABLE_RAG === 'true' && apiKey) {
         try {
             const store = await getHistoryStore(apiKey);

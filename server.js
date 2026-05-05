@@ -58,23 +58,21 @@ app.post('/v1/chat/new', authenticate, async (req, res) => {
     }
     const { expert_mode, restore } = req.body;
     const client = getClient();
+    const apiKey = req.headers.authorization?.replace('Bearer ', '');
     try {
         await client.newChat({ expertMode: expert_mode, restore: restore || false });
         
-        // При создании нового чата (не восстановленного) очищаем RAG-историю для этого apiKey
-        const apiKey = req.headers.authorization?.replace('Bearer ', '');
-        if (apiKey && !restore) {
+        if (!restore && apiKey && process.env.ENABLE_RAG === 'true') {
             try {
                 const { getHistoryStore } = require('./dist/rag/init.js');
                 const store = await getHistoryStore(apiKey);
                 await store.clear();
-                console.log(`🧹 RAG store cleared for new chat session (${apiKey})`);
+                console.log(`🧹 RAG history cleared for new chat session (${apiKey})`);
             } catch (err) {
-                // RAG может быть не включён – игнорируем
+                console.warn('Failed to clear RAG store:', err);
             }
         }
-        // Сбрасываем флаг inRefreshedChat, т.к. теперь чат новый
-        client.inRefreshedChat = false;
+        
         res.json({ success: true, expert_mode, restore });
     } catch (err) {
         console.error('Failed to create new chat:', err);

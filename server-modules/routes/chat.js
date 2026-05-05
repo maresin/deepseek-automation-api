@@ -1,3 +1,4 @@
+// server-modules/routes/chat.js
 const path = require('path');
 const fs = require('fs');
 const { getClient } = require('../state');
@@ -11,12 +12,6 @@ const {
     SendUserMessageTask
 } = require('../../dist');
 
-/**
- * Обрезает текст, оставляя начало (первые maxLen символов).
- * @param {string} text
- * @param {number} maxLen
- * @returns {string}
- */
 function truncateFromEnd(text, maxLen) {
     if (text.length <= maxLen) return text;
     return text.slice(0, maxLen) + '...';

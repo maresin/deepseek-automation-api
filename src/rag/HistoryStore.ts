@@ -2,7 +2,7 @@
 import path from 'path';
 import fs from 'fs';
 import { IEmbeddingService, IndexedItem, SearchResult, Exchange, FileChunk } from './types.js';
-import { IVectorIndex, EadaVectorIndex } from './VectorIndex.js';
+import { IVectorIndex, LinearIndex } from './LinearIndex.js';
 
 export class HistoryStore {
     private index: IVectorIndex;
@@ -15,7 +15,7 @@ export class HistoryStore {
         this.sessionId = sessionId;
         this.embeddingService = embeddingService;
         this.dataDir = dataDir;
-        this.index = new EadaVectorIndex(384);
+        this.index = new LinearIndex(384);
         this.chunkSize = parseInt(process.env.RAG_CHUNK_SIZE || '2000', 10);
         this.ensureDataDir();
         this.loadIndex().catch(console.error);
@@ -27,14 +27,16 @@ export class HistoryStore {
     }
 
     private getIndexPath(): string {
-        return path.join(process.cwd(), this.dataDir, `${this.sessionId}.index`);
+        return path.join(process.cwd(), this.dataDir, `${this.sessionId}`);
     }
 
     private async loadIndex(): Promise<void> {
         const indexPath = this.getIndexPath();
-        if (fs.existsSync(indexPath)) {
+        try {
             await this.index.load(indexPath);
             console.log(`📚 Loaded index for session ${this.sessionId} (${this.index.size()} entries)`);
+        } catch (err) {
+            console.log(`No existing index for session ${this.sessionId}, starting fresh`);
         }
     }
 
@@ -91,11 +93,9 @@ export class HistoryStore {
 
     async search(query: string, currentChatId: string, topK: number = 10): Promise<SearchResult[]> {
         const queryVec = await this.embeddingService.embed(query);
-        // Поиск всех релевантных чанков (до topK * 2, чтобы потом отфильтровать)
         let results = this.index.search(queryVec, topK * 2);
-        // Фильтруем: исключаем чанки из текущего чата
+
         results = results.filter(r => r.item.chatId !== currentChatId);
-        // Оставляем topK лучших
         results.sort((a, b) => b.similarity - a.similarity);
         return results.slice(0, topK);
     }

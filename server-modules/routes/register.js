@@ -1,3 +1,4 @@
+// server-modules/routes/register.js
 const { getApiKey, saveApiKey, generateApiKey, deleteSessionFiles, bothFilesExist, getSystemPrompt } = require('../utils');
 const { setClientAndScheduler, isReady } = require('../state');
 const { DeepSeekClient } = require('../../dist');
@@ -23,10 +24,11 @@ module.exports = async function registerRoute(req, res) {
     if (process.env.ENABLE_RAG === 'true') {
         try {
             const { getHistoryStore } = require('../../dist/rag/init.js');
-            await getHistoryStore(apiKey);
-            console.log(`📚 RAG store created for session ${apiKey}`);
+            const store = await getHistoryStore(apiKey);
+            await store.clear();
+            console.log(`📚 RAG store created (cleared) for session ${apiKey}`);
         } catch (err) {
-            console.error('Failed to create RAG store:', err);
+            console.error('Failed to create/clear RAG store:', err);
         }
     }
 

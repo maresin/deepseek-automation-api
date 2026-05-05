@@ -1,3 +1,4 @@
+// src/rag/RealEmbeddingService.ts
 import { IEmbeddingService } from './types.js';
 
 export class RealEmbeddingService implements IEmbeddingService {

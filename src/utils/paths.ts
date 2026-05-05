@@ -1,11 +1,7 @@
 // src/utils/paths.ts
-// Path management for browsers and session state
-
 import path from 'path';
 import fs from 'fs';
 
-// Get path where Playwright browsers are installed
-// Browsers are stored inside the module directory for portability
 export function getBrowsersPath(): string {
     const moduleBrowsersPath = path.join(__dirname, '..', '..', 'browsers');
     
@@ -16,8 +12,6 @@ export function getBrowsersPath(): string {
     return moduleBrowsersPath;
 }
 
-// Find Chromium executable path inside the browsers directory
-// Supports Linux, macOS, Windows
 export function getChromiumExecutablePath(): string {
     const browsersPath = getBrowsersPath();
     
@@ -63,14 +57,11 @@ export function getChromiumExecutablePath(): string {
     return executablePath;
 }
 
-// Get path for session state file (cookies, localStorage)
 export function getStatePath(): string {
     const browsersPath = getBrowsersPath();
     return path.join(browsersPath, '..', 'state.json');
 }
 
-// Set environment variables for Playwright
-// Forces Playwright to use browsers from our local directory
 export function setupPlaywrightEnv(): void {
     const browsersPath = getBrowsersPath();
     process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;

@@ -1,3 +1,4 @@
+// src/tasks/SendUserMessageTask.ts
 import path from 'path';
 import fs from 'fs';
 import { Task } from '../task/Task.js';
@@ -25,7 +26,6 @@ export class SendUserMessageTask extends Task<string> {
     }
 
     private async indexFileIfNeeded(client: DeepSeekClient): Promise<void> {
-        // Безусловно проверяем, есть ли файл и включён ли RAG
         if (!this.filePath) {
             console.log('🔍 indexFileIfNeeded: no file path, skipping');
             return;
@@ -60,17 +60,14 @@ export class SendUserMessageTask extends Task<string> {
     }
 
     async execute(client: DeepSeekClient): Promise<string> {
-        // 1. Индексация файла (всегда, если файл есть и RAG включён)
         await this.indexFileIfNeeded(client);
 
-        // 2. Проверка отложенного перехода
         if (client.needTransition) {
             console.log('🚦 needTransition flag set, performing transition...');
             await this.performTransition(client);
             client.needTransition = false;
         }
 
-        // 3. Системный промпт
         if (!client.isSystemPromptSent() && client.getSystemPromptText()) {
             console.log('📌 Sending system prompt before user message...');
             const systemPromptText = client.getSystemPromptText()!;
@@ -79,7 +76,6 @@ export class SendUserMessageTask extends Task<string> {
             console.log('✅ System prompt sent and confirmed');
         }
 
-        // 4. Проверка, влезает ли сообщение/файл в контекст
         let requiredChars = this.text.length;
         if (this.filePath) {
             requiredChars += this.getFileSizeInChars(this.filePath);
@@ -102,7 +98,6 @@ export class SendUserMessageTask extends Task<string> {
             return await this.execute(client);
         }
 
-        // 5. Отправка сообщения
         try {
             const response = await client.executePipeline({
                 text: this.text,
@@ -128,19 +123,15 @@ export class SendUserMessageTask extends Task<string> {
             throw new Error('No snapshot available for transition');
         }
 
-        // Создаём новый чат через интерфейс браузера
         await client.chatController.newChat();
         
-        // ✅ Генерируем новый ID для перешедшего чата
         client.currentChatId = Date.now().toString();
         console.log(`🆕 New chat created with ID: ${client.currentChatId} (after transition)`);
         
-        // Сбрасываем флаги состояния
         client.setChatStarted(false);
         client.setSystemPromptSent(false);
         await client.contextManager.resetContext();
 
-        // Загружаем снимок
         const uploadPromptPath = path.join(process.cwd(), 'prompts', 'snapshot_upload_prompt.txt');
         let uploadPrompt = "Here is the context snapshot of our previous session (attached file). Please accept it and confirm by replying 'OK'.";
         if (fs.existsSync(uploadPromptPath)) {

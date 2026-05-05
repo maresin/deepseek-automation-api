@@ -1,3 +1,4 @@
+// server-modules/chunking.js
 function chunkText(text, maxChars = null) {
     const chunkSize = maxChars || parseInt(process.env.RAG_CHUNK_SIZE || '2000', 10);
     const chunks = [];

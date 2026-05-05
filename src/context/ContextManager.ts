@@ -1,3 +1,4 @@
+// src/context/ContextManager.ts
 import fs from 'fs';
 import path from 'path';
 import { DeepSeekClient } from '../DeepSeekClient.js';

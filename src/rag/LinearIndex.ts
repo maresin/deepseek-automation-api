@@ -1,3 +1,4 @@
+// src/rag/LinearIndex.ts
 import { IndexedItem, SearchResult } from './types.js';
 
 export interface IVectorIndex {
@@ -13,7 +14,6 @@ export class LinearIndex implements IVectorIndex {
     private items: IndexedItem[] = [];
     private vectors: number[][] = [];
 
-    // Добавляем конструктор, который может принимать размерность (игнорируется)
     constructor(_dimension?: number) {}
 
     add(item: IndexedItem, vector: number[]): void {
@@ -73,4 +73,4 @@ export class LinearIndex implements IVectorIndex {
     }
 }
 
-export const EadaVectorIndex = LinearIndex;
+export { LinearIndex as EadaVectorIndex };

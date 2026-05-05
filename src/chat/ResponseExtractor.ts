@@ -1,3 +1,4 @@
+// src/chat/ResponseExtractor.ts
 import { BrowserManager } from '../browser/BrowserManager.js';
 import { Selectors } from '../browser/Selectors.js';
 

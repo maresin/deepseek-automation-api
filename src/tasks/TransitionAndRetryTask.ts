@@ -15,7 +15,6 @@ export class TransitionAndRetryTask extends Task<void> {
     async execute(client: DeepSeekClient): Promise<void> {
         console.log('🔄 Performing snapshot, transition, and retry...');
 
-        // 1. Создаём снимок (даже если пороги не достигнуты)
         const snapshotPromptPath = require('path').join(process.cwd(), 'prompts', 'snapshot_prompt.txt');
         if (!require('fs').existsSync(snapshotPromptPath)) {
             console.warn('⚠️ Snapshot prompt not found, skipping snapshot creation');
@@ -29,10 +28,8 @@ export class TransitionAndRetryTask extends Task<void> {
             console.log('✅ Snapshot created');
         }
 
-        // 2. Создаём новый чат (через существующий метод клиента, который очищает контекст)
         await client.newChat({ skipSystemPrompt: true });
 
-        // 3. Восстанавливаем снимок (отправляем как сообщение)
         const snapshot = await client.contextManager.getSnapshot();
         if (snapshot && snapshot.length > 0) {
             console.log(`📤 Restoring snapshot (${snapshot.length} chars) in new chat...`);
@@ -42,7 +39,6 @@ export class TransitionAndRetryTask extends Task<void> {
             console.warn('⚠️ No snapshot to restore');
         }
 
-        // 4. Повторяем исходную задачу
         console.log('🔁 Retrying original task in new chat...');
         const retryTask = new SendUserMessageTask(this.text, this.filePath);
         await client.taskQueue.add(retryTask, 'normal');

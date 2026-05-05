@@ -1,3 +1,4 @@
+// src/rag/init.ts
 import { getEmbeddingService } from './EmbeddingService.js';
 import { HistoryStore } from './HistoryStore.js';
 

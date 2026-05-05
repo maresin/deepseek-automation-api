@@ -8,12 +8,11 @@ export class RestoreChatTask extends Task<void> {
     }
 
     async execute(client: DeepSeekClient): Promise<void> {
-        const restored = await client.restoreLastChat();   // используем публичный метод
+        const restored = await client.restoreLastChat();
         if (restored) {
             client.setChatStarted(true);
             client.setSystemPromptSent(true);
         } else {
-            // If nothing to restore, create a new chat
             await client.chatController.newChat();
             client.setChatStarted(false);
             client.setSystemPromptSent(false);

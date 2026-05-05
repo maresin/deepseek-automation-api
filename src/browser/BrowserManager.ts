@@ -1,3 +1,4 @@
+// src/browser/BrowserManager.ts
 import { chromium, Browser, BrowserContext, Page } from 'playwright-core';
 import { getChromiumExecutablePath } from '../utils/paths.js';
 import fs from 'fs';
@@ -26,7 +27,6 @@ export class BrowserManager {
             permissions: ['clipboard-read', 'clipboard-write']
         });
 
-        // Изоляция буфера обмена: подмена navigator.clipboard на эмуляцию в памяти
         await this.context.addInitScript(() => {
             if ((window as any).__playwright_clipboard_isolated) return;
 

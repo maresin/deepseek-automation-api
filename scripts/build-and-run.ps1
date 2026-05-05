@@ -1,25 +1,20 @@
 Write-Host "🔧 DeepSeek Automation API - Build & Run Script" -ForegroundColor Green
 
-# Проверка Node.js
 try { node --version } catch { Write-Host "❌ Node.js not found" -ForegroundColor Red; exit 1 }
 Write-Host "✅ Node.js $(node -v)" -ForegroundColor Green
 
-# Установка зависимостей
 Write-Host "📦 Installing dependencies..." -ForegroundColor Yellow
 npm install
 if ($LASTEXITCODE -ne 0) { Write-Host "❌ npm install failed" -ForegroundColor Red; exit 1 }
 
-# Сборка TypeScript
 Write-Host "🔨 Building TypeScript..." -ForegroundColor Yellow
 npm run build
 if ($LASTEXITCODE -ne 0) { Write-Host "❌ Build failed" -ForegroundColor Red; exit 1 }
 
-# Установка браузера
 Write-Host "🌐 Installing Chromium browser..." -ForegroundColor Yellow
 npm run postinstall
 if ($LASTEXITCODE -ne 0) { Write-Host "❌ Browser installation failed" -ForegroundColor Red; exit 1 }
 
-# Создание .env при отсутствии
 if (-not (Test-Path .env)) {
     Write-Host "📝 Creating .env file..." -ForegroundColor Yellow
     @"

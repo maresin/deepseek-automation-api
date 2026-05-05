@@ -1,10 +1,10 @@
 // src/rag/types.ts
 export interface Exchange {
     type: 'exchange';
-    chatId: string;          // идентификатор чата, к которому относится обмен
+    chatId: string;
     user: string;
     assistant: string;
-    combined: string;        // чанк
+    combined: string;
     chunkIndex: number;
     totalChunks: number;
     timestamp: number;
@@ -13,7 +13,7 @@ export interface Exchange {
 
 export interface FileChunk {
     type: 'file';
-    chatId: string;          // идентификатор чата, в котором загружен файл
+    chatId: string;
     fileName: string;
     chunkIndex: number;
     content: string;

@@ -9,11 +9,10 @@ async function initFromExistingFiles() {
         console.log('📂 Found existing session files. Attempting to restore...');
         const apiKey = getApiKey();
         const systemPrompt = getSystemPrompt();
-        // ❌ Убрано принудительное restoreSession: true
         const config = getClientConfig({ systemPrompt });
         const newClient = new DeepSeekClient(config);
         try {
-            await newClient.initialize(); // внутри сам использует config.restoreSession из .env
+            await newClient.initialize();
             setClientAndScheduler(newClient, null);
             console.log(`✅ Session restored. API key: ${apiKey}`);
         } catch (err) {

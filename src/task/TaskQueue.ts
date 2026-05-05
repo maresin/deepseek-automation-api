@@ -40,7 +40,6 @@ export class TaskQueue {
                 console.log(`✅ Task completed: ${task.description} (${duration}ms)`);
             } catch (error) {
                 console.error(`❌ Task failed: ${task.description}`, error);
-                // Optionally handle critical errors – for now just continue
             }
         }
 

@@ -7,7 +7,7 @@ export abstract class Task<T = any> {
     public priority: TaskPriority;
     public description: string;
     public retryCount: number = 0;
-    protected maxRetries: number = 1;   // изменено с public на protected
+    protected maxRetries: number = 1;
     private _resolve?: (value: T) => void;
     private _reject?: (reason: any) => void;
     public readonly id: string;

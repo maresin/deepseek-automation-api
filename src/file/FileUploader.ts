@@ -1,3 +1,4 @@
+// src/file/FileUploader.ts
 import fs from 'fs';
 import { ChatController } from '../chat/ChatController.js';
 import { ContextManager } from '../context/ContextManager.js';

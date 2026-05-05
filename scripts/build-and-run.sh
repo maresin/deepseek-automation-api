@@ -1,14 +1,11 @@
 #!/bin/bash
-
-# Цветной вывод
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 echo -e "${GREEN}🔧 DeepSeek Automation API - Build & Run Script${NC}"
 
-# Проверка Node.js
 if ! command -v node &> /dev/null; then
     echo -e "${RED}❌ Node.js not found. Please install Node.js 16 or higher.${NC}"
     exit 1
@@ -21,14 +18,12 @@ if [ "$NODE_VERSION" -lt 16 ]; then
 fi
 echo -e "${GREEN}✅ Node.js $(node -v)${NC}"
 
-# Проверка npm
 if ! command -v npm &> /dev/null; then
     echo -e "${RED}❌ npm not found.${NC}"
     exit 1
 fi
 echo -e "${GREEN}✅ npm $(npm -v)${NC}"
 
-# Установка зависимостей
 echo -e "${YELLOW}📦 Installing dependencies...${NC}"
 npm install
 if [ $? -ne 0 ]; then
@@ -37,7 +32,6 @@ if [ $? -ne 0 ]; then
 fi
 echo -e "${GREEN}✅ Dependencies installed.${NC}"
 
-# Сборка TypeScript
 echo -e "${YELLOW}🔨 Building TypeScript...${NC}"
 npm run build
 if [ $? -ne 0 ]; then
@@ -46,7 +40,6 @@ if [ $? -ne 0 ]; then
 fi
 echo -e "${GREEN}✅ Build successful.${NC}"
 
-# Установка браузера Playwright
 echo -e "${YELLOW}🌐 Installing Chromium browser...${NC}"
 npm run postinstall
 if [ $? -ne 0 ]; then
@@ -55,7 +48,6 @@ if [ $? -ne 0 ]; then
 fi
 echo -e "${GREEN}✅ Browser ready.${NC}"
 
-# Создание .env из шаблона, если отсутствует
 if [ ! -f .env ]; then
     echo -e "${YELLOW}📝 Creating .env file from template...${NC}"
     cat > .env <<EOF
@@ -88,7 +80,6 @@ else
     echo -e "${GREEN}✅ .env already exists.${NC}"
 fi
 
-# Запуск сервера
 echo -e "${GREEN}🚀 Starting server...${NC}"
 echo -e "${YELLOW}Press Ctrl+C to stop.${NC}"
 npm start

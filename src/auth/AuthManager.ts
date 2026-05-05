@@ -21,7 +21,6 @@ export class AuthManager {
                 await page.waitForSelector(Selectors.textarea, { timeout: 120000 });
             }
         } else {
-            // Если не на странице входа и нет чата, переходим на страницу входа
             await this.browserManager.goto('https://chat.deepseek.com/sign_in');
             await this.ensureAuthenticated(email, password);
         }

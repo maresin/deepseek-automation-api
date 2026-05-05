@@ -5,7 +5,7 @@ import { DeepSeekClient } from '../DeepSeekClient.js';
 export class SendSystemPromptTask extends Task<void> {
     constructor() {
         super('Send system prompt', 'normal');
-        this.maxRetries = 2;   // устанавливаем через protected поле
+        this.maxRetries = 2;
     }
 
     async execute(client: DeepSeekClient): Promise<void> {
