@@ -12,27 +12,14 @@ const {
 } = require('../../dist');
 
 /**
- * Пропорционально обрезает массив текстовых фрагментов (с начала), чтобы их суммарная длина не превышала limit.
- * @param {string[]} fragments - исходные фрагменты
- * @param {number} limit - максимальная суммарная длина в символах
- * @returns {string[]} обрезанные фрагменты (порядок сохранён)
+ * Обрезает текст, оставляя начало (первые maxLen символов).
+ * @param {string} text
+ * @param {number} maxLen
+ * @returns {string}
  */
-function proportionallyTruncate(fragments, limit) {
-    const total = fragments.reduce((sum, f) => sum + f.length, 0);
-    if (total <= limit) return fragments.slice();
-
-    let targetLengths = fragments.map(f => Math.floor(f.length / total * limit));
-    let sumTarget = targetLengths.reduce((a, b) => a + b, 0);
-    let diff = limit - sumTarget;
-    for (let i = 0; i < diff && i < targetLengths.length; i++) {
-        targetLengths[i]++;
-    }
-
-    return fragments.map((f, idx) => {
-        if (f.length <= targetLengths[idx]) return f;
-        // обрезаем с начала
-        return f.slice(0, targetLengths[idx]);
-    });
+function truncateFromEnd(text, maxLen) {
+    if (text.length <= maxLen) return text;
+    return text.slice(0, maxLen) + '...';
 }
 
 module.exports = async function chatRoute(req, res) {
@@ -44,7 +31,6 @@ module.exports = async function chatRoute(req, res) {
     const apiKey = req.headers.authorization?.replace('Bearer ', '') || 'default';
     global.currentApiKey = apiKey;
 
-    // RAG store всегда инициализируется, если RAG включён
     let store = null;
     if (process.env.ENABLE_RAG === 'true') {
         try {
@@ -53,22 +39,19 @@ module.exports = async function chatRoute(req, res) {
             console.warn('RAG store not available:', err);
         }
     }
-    // Поиск используем только после перехода в новый чат
     const useSearchRAG = process.env.ENABLE_RAG === 'true' && client.inRefreshedChat === true && store !== null;
 
     const userMessage = messages.filter(m => m.role === 'user').pop();
     if (!userMessage && !file) return res.status(400).json({ error: 'No user message or file provided' });
 
-    let userText = userMessage ? userMessage.content : '';
+    const originalUserText = userMessage ? userMessage.content : '';
+    let finalUserText = originalUserText;
 
-    // --- RAG: обогащение запроса (только после перехода) ---
-    if (useSearchRAG && userText) {
+    if (useSearchRAG && originalUserText) {
         try {
-            // Ищем больше чанков для корректной группировки
-            const results = await store.search(userText, client.currentChatId, 15);
+            const results = await store.search(originalUserText, client.currentChatId, 15);
             if (results.length > 0) {
-                // Группируем чанки обменов по (chatId, user, assistant)
-                const exchangeMap = new Map(); // key = `${chatId}|${user}|${assistant}`
+                const exchangeMap = new Map();
                 for (const r of results) {
                     if (r.item.type === 'exchange') {
                         const key = `${r.item.chatId}|${r.item.user}|${r.item.assistant}`;
@@ -76,38 +59,25 @@ module.exports = async function chatRoute(req, res) {
                         exchangeMap.get(key).push(r.item);
                     }
                 }
-                // Склеиваем чанки в полные ответы ассистентов
                 const fullAnswers = [];
+                const MAX_FRAGMENT_CHARS = parseInt(process.env.RAG_FRAGMENT_MAX_CHARS || '1200', 10);
                 for (const chunks of exchangeMap.values()) {
                     chunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
                     const fullCombined = chunks.map(c => c.combined).join('');
-                    // Извлекаем ответ ассистента (часть после "\nA: ")
                     let assistantPart = fullCombined;
-                    if (fullCombined.includes('\nA: ')) {
-                        assistantPart = fullCombined.split('\nA: ')[1];
-                    }
+                    if (fullCombined.includes('\nA: ')) assistantPart = fullCombined.split('\nA: ')[1];
+                    assistantPart = truncateFromEnd(assistantPart, MAX_FRAGMENT_CHARS);
                     fullAnswers.push(assistantPart);
                 }
-
                 if (fullAnswers.length) {
-                    // Формируем фрагменты: начало ответа (первые 500 символов)
-                    const rawFragments = fullAnswers.map(ans => {
-                        const maxLen = 500;
-                        const snippet = ans.length > maxLen ? ans.slice(0, maxLen) + '...' : ans;
-                        return `Previous answer: ${snippet}`;
-                    });
-
-                    const freeChars = Math.floor(client.contextManager.maxChars * 0.9 - client.contextManager.totalChars);
-                    if (freeChars > 0 && rawFragments.length) {
-                        const truncated = proportionallyTruncate(rawFragments, freeChars);
-                        if (truncated.length) {
-                            const contextSection = `Relevant previous conversation:\n${truncated.join('\n---\n')}\n\n---\n\n`;
-                            userText = contextSection + userText;
-                            console.log(`📚 Enriched prompt with ${truncated.length} unique exchange(s) (total ${freeChars} chars allocated)`);
-                        }
-                    } else {
-                        console.log(`⚠️ Not enough free context for RAG enrichment (free=${freeChars} chars), skipping`);
-                    }
+                    const searchResults = {
+                        query: originalUserText,
+                        fragments: fullAnswers.map((content, idx) => ({ id: idx + 1, content }))
+                    };
+                    const jsonBlock = JSON.stringify(searchResults, null, 2);
+                    const instruction = `I have retrieved relevant previous conversation fragments. Use them if they help answer the user's question.\n\n<search_results>\n${jsonBlock}\n</search_results>\n\nNow answer the user's question: ${originalUserText}`;
+                    finalUserText = instruction;
+                    console.log(`📚 RAG: added ${fullAnswers.length} unique fragment(s) (total ~${jsonBlock.length} chars)`);
                 }
             }
         } catch (err) {
@@ -115,21 +85,18 @@ module.exports = async function chatRoute(req, res) {
         }
     }
 
-    // --- Обработка загруженного файла ---
-    let tempFilePath = null;
+    let userFilePath = null;
     if (file) {
         const ext = path.extname(file.originalname);
-        tempFilePath = path.join(process.cwd(), 'uploads', `${Date.now()}${ext}`);
-        fs.renameSync(file.path, tempFilePath);
+        userFilePath = path.join(process.cwd(), 'uploads', `${Date.now()}${ext}`);
+        fs.renameSync(file.path, userFilePath);
     }
 
-    // Финальный промпт с учётом оригинальных tools
-    const prompt = userText ? buildPrompt(userText, tools) : '';
-    console.log(`📤 Question: ${userText?.substring(0, 100) || 'No text'}...`);
+    const prompt = buildPrompt(finalUserText, tools);
+    console.log(`📤 Question: ${originalUserText.substring(0, 100) || 'No text'}...`);
     if (tools?.length) console.log(`🔧 Tools: ${tools.map(t => t.function.name).join(', ')}`);
-    if (file) console.log(`📎 File included: ${file.originalname}`);
+    if (userFilePath) console.log(`📎 User file: ${file.originalname}`);
 
-    // --- Очередь задач ---
     const tasksToAdd = [];
     if (extra_body?.expert_mode !== undefined && !client.isChatStarted()) {
         tasksToAdd.push(new SwitchExpertModeTask(extra_body.expert_mode));
@@ -141,7 +108,7 @@ module.exports = async function chatRoute(req, res) {
         tasksToAdd.push(new SwitchWebSearchTask(extra_body.web_search));
     }
 
-    const userTask = new SendUserMessageTask(prompt, tempFilePath);
+    const userTask = new SendUserMessageTask(prompt, userFilePath);
     tasksToAdd.push(userTask);
 
     let result;
@@ -154,18 +121,13 @@ module.exports = async function chatRoute(req, res) {
         }
     }
 
-    // --- Сохранение обмена в RAG (всегда, если store доступен) ---
     if (store && userMessage && result) {
-        await store.addExchange(client.currentChatId, userMessage.content, result);
+        await store.addExchange(client.currentChatId, originalUserText, result);
         console.log('💾 Exchange saved to RAG store');
     }
 
-    // --- Очистка временного файла ---
-    if (tempFilePath && fs.existsSync(tempFilePath)) {
-        fs.unlinkSync(tempFilePath);
-    }
+    if (userFilePath && fs.existsSync(userFilePath)) fs.unlinkSync(userFilePath);
 
-    // --- Формирование ответа OpenAI (с поддержкой tool_calls) ---
     let parsedResponse, isToolCall = false;
     try {
         parsedResponse = JSON.parse(result);

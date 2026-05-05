@@ -1,12 +1,12 @@
 {
   "name": "deepseek-automation-api",
   "version": "1.0.0",
-  "description": "Portable DeepSeek automation API with OpenAI compatibility",
+  "description": "Portable DeepSeek automation API with OpenAI compatibility and RAG support",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "clean": "rm -rf dist browsers uploads state.json .api-keys.json",
+    "clean": "rm -rf dist browsers uploads state.json .api-key rag_data",
     "postinstall": "node scripts/install-browser.js",
     "prepublishOnly": "npm run build",
     "start": "node server.js",
@@ -34,7 +34,8 @@
     "automation",
     "api",
     "openai",
-    "playwright"
+    "playwright",
+    "rag"
   ],
   "license": "MIT"
 }
