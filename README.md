@@ -24,15 +24,7 @@ OpenAI‑compatible API server for **DeepSeek** (free web version) with tool cal
 
 ## Quick Start
 
-```bash
-git clone https://github.com/maresin/deepseek-automation-api.git
-cd deepseek-automation-api
-cp .env.example .env                     # edit with your DeepSeek credentials
-npm install
-npm run build
-npm run postinstall                      # install Chromium browser
-npm start
-```
+Perform the installation according to the instructions.
 
 Then register and chat:
 
@@ -57,10 +49,19 @@ curl -X POST http://localhost:3000/v1/chat/completions \
 
 ### Steps
 
+Clone the repository and navigate to the program folder:
+
+```bash
+git clone https://github.com/maresin/deepseek-automation-api.git
+cd deepseek-automation-api
+```
+Install the browser dependencies in the program folder:
+
 ```bash
 npm install               # install dependencies
 npm run build             # compile TypeScript
-npm run postinstall       # download Chromium (~300 MB)
+mkdir -p browsers         # create local browser directory
+PLAYWRIGHT_BROWSERS_PATH=./browsers npx playwright install chromium   # install Chromium into ./browsers
 ```
 
 Create a `.env` file (see [Configuration](#configuration-env) below). Then:
