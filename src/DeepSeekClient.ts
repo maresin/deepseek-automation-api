@@ -155,6 +155,8 @@ export class DeepSeekClient {
 
         if (filePath) {
             await this.fileUploader.upload(filePath);
+            await this.page!.focus(Selectors.textarea);
+            await this.page!.keyboard.press('Escape');
         }
 
         await this.chatController.clearInput();

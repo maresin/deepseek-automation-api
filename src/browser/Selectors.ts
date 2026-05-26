@@ -1,6 +1,7 @@
 // src/browser/Selectors.ts
 export const Selectors = {
     textarea: 'textarea',
+    mainTextarea: 'textarea[placeholder*="Message"], textarea[placeholder*="Сообщение"], textarea[placeholder*="Message DeepSeek"]', // уточняем
     sendButton: 'div[role="button"][aria-disabled="false"]:not(.ds-icon-button--disabled)',
 
     permanentNewChatButton: 'div[tabindex="0"]:has(svg path[d^="M8 0.599609"])',
@@ -10,7 +11,9 @@ export const Selectors = {
 
     deleteFileIcon: 'svg path[d^="M10.6074 4.40278"]',
 
-    uploadButton: 'button[aria-label*="upload"], button[aria-label*="загрузить"], .ds-icon-button',
+    // uploadButton: 'svg path[d^="M5.5498 9.75V5"]',
+    // uploadButton: '.ds-icon-button[role="button"]:not([aria-label])',
+  
     fileInput: 'input[type="file"]',
 
     loadingIndicator: '.ds-icon-button--loading',

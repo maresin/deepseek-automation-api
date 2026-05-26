@@ -1,4 +1,3 @@
-// src/chat/ChatController.ts
 import { BrowserManager } from '../browser/BrowserManager.js';
 import { Selectors } from '../browser/Selectors.js';
 
@@ -7,14 +6,17 @@ export class ChatController {
 
     async clearInput(): Promise<void> {
         const page = this.browserManager.page!;
-        await page.click(Selectors.textarea);
+        // Ждём, что основное поле видимо и активно
+        await page.waitForSelector(Selectors.mainTextarea, { state: 'visible' });
+        await page.click(Selectors.mainTextarea);
         await page.keyboard.press('Control+A');
         await page.keyboard.press('Backspace');
     }
 
     async typeMessage(message: string): Promise<void> {
         const page = this.browserManager.page!;
-        await page.click(Selectors.textarea);
+        await page.waitForSelector(Selectors.mainTextarea, { state: 'visible' });
+        await page.click(Selectors.mainTextarea);
         if (message.length <= 50) {
             for (const char of message) {
                 await page.keyboard.type(char);
@@ -30,7 +32,7 @@ export class ChatController {
         const page = this.browserManager.page!;
         await page.keyboard.press('Enter');
         await page.waitForTimeout(500);
-        const textAfterEnter = await page.inputValue(Selectors.textarea).catch(() => '');
+        const textAfterEnter = await page.inputValue(Selectors.mainTextarea).catch(() => '');
         if (textAfterEnter && textAfterEnter.length > 0) {
             const sendButton = await page.$(Selectors.sendButton);
             if (sendButton) {
@@ -42,20 +44,40 @@ export class ChatController {
 
     async attachFile(filePath: string): Promise<void> {
         const page = this.browserManager.page!;
-        const uploadButton = await page.$(Selectors.uploadButton);
-        if (!uploadButton) throw new Error('Upload button not found');
-        await uploadButton.click();
-        await page.waitForTimeout(1000);
+        
+        // Ждём появления основного текстового поля
+        const textarea = await page.waitForSelector(Selectors.mainTextarea, { state: 'visible', timeout: 10000 });
+        const box = await textarea.boundingBox();
+        if (!box) throw new Error('Cannot get textarea position');
+        
+        // Вычисляем координаты для клика: правее поля ввода (отступ ~40px, можно подстроить)
+        const x = box.x + box.width + 40;
+        const y = box.y + box.height / 2;
+        
+        // Кликаем по координатам — это должна быть кнопка загрузки (скрепка)
+        await page.mouse.click(x, y);
+        await page.waitForTimeout(500);
+        
+        // Закрываем возможное окно поиска (если клик попал не туда)
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(200);
+        
+        // Находим скрытый input[type="file"] и программно загружаем файл
         const fileInput = await page.$(Selectors.fileInput);
         if (!fileInput) throw new Error('File input not found');
         await fileInput.setInputFiles(filePath);
+        
         try {
             await page.waitForSelector('.ds-loading', { timeout: 5000 });
             await page.waitForSelector('.ds-loading', { state: 'hidden', timeout: 60000 });
         } catch { }
+        
         await page.waitForSelector(Selectors.sendButton, { timeout: 10000 });
-        await page.click(Selectors.textarea);
-        await page.waitForTimeout(500);
+        
+        // Дополнительный Escape для закрытия любого модального окна
+        await page.keyboard.press('Escape');
+        await page.focus(Selectors.mainTextarea);
+        
         console.log(`   ✅ File attached and loaded`);
     }
 
@@ -141,7 +163,7 @@ export class ChatController {
         await button.evaluate((btn: HTMLElement) => btn.scrollIntoView({ behavior: 'smooth', block: 'center' }));
         await page.waitForTimeout(500);
         await button.click();
-        await page.waitForSelector(Selectors.textarea, { timeout: 30000 });
+        await page.waitForSelector(Selectors.mainTextarea, { timeout: 30000 });
         console.log('✅ New chat created');
     }
 
