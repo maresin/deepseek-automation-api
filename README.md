@@ -37,6 +37,12 @@ curl -X POST http://localhost:3000/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hello!"}]}'
+
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -F "files=@file1.pdf" \
+  -F "files=@file2.docx" \
+  -F 'data={"messages":[{"role":"user","content":"Analyze these documents"}]}'
 ```
 
 ---
