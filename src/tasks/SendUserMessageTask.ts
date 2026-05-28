@@ -1,4 +1,3 @@
-// src/tasks/SendUserMessageTask.ts
 import path from 'path';
 import fs from 'fs';
 import { Task } from '../task/Task.js';
@@ -8,9 +7,11 @@ import { NeedTransitionError } from '../file/FileUploader.js';
 export class SendUserMessageTask extends Task<string> {
     constructor(
         private text: string,
-        private filePath?: string
+        private filePaths?: string[]
     ) {
-        const desc = filePath ? `Send message with file ${filePath}` : `Send message: ${text.substring(0, 50)}`;
+        const desc = filePaths && filePaths.length
+            ? `Send message with ${filePaths.length} file(s)`
+            : `Send message: ${text.substring(0, 50)}`;
         super(desc, 'normal');
         this.maxRetries = 0;
     }
@@ -25,49 +26,44 @@ export class SendUserMessageTask extends Task<string> {
         }
     }
 
-    private async indexFileIfNeeded(client: DeepSeekClient): Promise<void> {
-        if (!this.filePath) {
-            console.log('🔍 indexFileIfNeeded: no file path, skipping');
-            return;
-        }
-        if (process.env.ENABLE_RAG !== 'true') {
-            console.log('🔍 indexFileIfNeeded: RAG not enabled, skipping');
-            return;
-        }
+    private async indexFileIfNeeded(client: DeepSeekClient, filePath: string): Promise<void> {
+        if (!filePath || process.env.ENABLE_RAG !== 'true') return;
         const apiKey = (global as any).currentApiKey;
-        if (!apiKey) {
-            console.log('🔍 indexFileIfNeeded: no apiKey, skipping');
-            return;
-        }
-        console.log(`🔍 Indexing file: ${this.filePath} for chat ${client.currentChatId}`);
+        if (!apiKey) return;
         try {
             const { getHistoryStore } = require('../../dist/rag/init.js');
             const store = await getHistoryStore(apiKey);
-            const fileContent = fs.readFileSync(this.filePath, 'utf-8');
+            const fileContent = fs.readFileSync(filePath, 'utf-8');
             const chunkSize = parseInt(process.env.RAG_CHUNK_SIZE || '2000', 10);
             const chunks: string[] = [];
             for (let i = 0; i < fileContent.length; i += chunkSize) {
                 chunks.push(fileContent.slice(i, i + chunkSize));
             }
-            console.log(`🔍 File ${path.basename(this.filePath)} split into ${chunks.length} chunks (size ${chunkSize})`);
             for (let i = 0; i < chunks.length; i++) {
-                await store.addFileChunk(client.currentChatId, path.basename(this.filePath), i, chunks[i]);
+                await store.addFileChunk(client.currentChatId, path.basename(filePath), i, chunks[i]);
             }
-            console.log(`📎 Indexed ${chunks.length} chunks from file ${path.basename(this.filePath)} for chat ${client.currentChatId}`);
+            console.log(`📎 Indexed ${chunks.length} chunks from file ${path.basename(filePath)} for chat ${client.currentChatId}`);
         } catch (err) {
-            console.error('❌ Failed to index file chunks:', err);
+            console.error('Failed to index file chunks:', err);
         }
     }
 
     async execute(client: DeepSeekClient): Promise<string> {
-        await this.indexFileIfNeeded(client);
+        // 1. Индексация всех файлов
+        if (this.filePaths && this.filePaths.length) {
+            for (const fp of this.filePaths) {
+                await this.indexFileIfNeeded(client, fp);
+            }
+        }
 
+        // 2. Отложенный переход
         if (client.needTransition) {
             console.log('🚦 needTransition flag set, performing transition...');
             await this.performTransition(client);
             client.needTransition = false;
         }
 
+        // 3. Системный промпт
         if (!client.isSystemPromptSent() && client.getSystemPromptText()) {
             console.log('📌 Sending system prompt before user message...');
             const systemPromptText = client.getSystemPromptText()!;
@@ -76,15 +72,15 @@ export class SendUserMessageTask extends Task<string> {
             console.log('✅ System prompt sent and confirmed');
         }
 
+        // 4. Проверка контекста (учитываем все файлы)
         let requiredChars = this.text.length;
-        if (this.filePath) {
-            requiredChars += this.getFileSizeInChars(this.filePath);
+        if (this.filePaths && this.filePaths.length) {
+            for (const fp of this.filePaths) {
+                requiredChars += this.getFileSizeInChars(fp);
+            }
         }
         const stats = await client.contextManager.getStats();
-        const currentTotal = stats.totalChars;
-        const maxChars = stats.maxChars;
-        const wouldBeTotal = currentTotal + requiredChars;
-        const wouldBePercent = (wouldBeTotal / maxChars) * 100;
+        const wouldBePercent = ((stats.totalChars + requiredChars) / stats.maxChars) * 100;
 
         if (wouldBePercent > 90) {
             console.log(`📊 Would be ${wouldBePercent.toFixed(1)}% after adding message. Initiating transition.`);
@@ -98,22 +94,22 @@ export class SendUserMessageTask extends Task<string> {
             return await this.execute(client);
         }
 
-        try {
-            const response = await client.executePipeline({
-                text: this.text,
-                filePath: this.filePath,
-                skipStatsUpdate: false
-            });
-            client.setChatStarted(true);
-            return response;
-        } catch (err) {
-            if (err instanceof NeedTransitionError) {
-                console.log('🔄 NeedTransitionError caught, performing transition and retry...');
-                await this.performTransition(client);
-                return await this.execute(client);
+        // 5. Прикрепляем файлы один за другим
+        if (this.filePaths && this.filePaths.length) {
+            for (const fp of this.filePaths) {
+                await client.fileUploader.upload(fp);
+                await client.page!.waitForTimeout(500); // небольшая пауза между файлами
             }
-            throw err;
         }
+
+        // 6. Отправка текстового сообщения (файлы уже прикреплены)
+        const response = await client.executePipeline({
+            text: this.text,
+            filePath: undefined, // не передаём файл, т.к. уже прикрепили
+            skipStatsUpdate: false
+        });
+        client.setChatStarted(true);
+        return response;
     }
 
     private async performTransition(client: DeepSeekClient): Promise<void> {
@@ -124,10 +120,8 @@ export class SendUserMessageTask extends Task<string> {
         }
 
         await client.chatController.newChat();
-        
         client.currentChatId = Date.now().toString();
         console.log(`🆕 New chat created with ID: ${client.currentChatId} (after transition)`);
-        
         client.setChatStarted(false);
         client.setSystemPromptSent(false);
         await client.contextManager.resetContext();

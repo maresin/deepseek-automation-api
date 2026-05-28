@@ -33,7 +33,8 @@ app.get('/health', (req, res) => {
 
 app.post('/v1/register', registerRoute);
 
-app.post('/v1/chat/completions', authenticate, upload.single('file'), (req, res, next) => {
+// ИСПРАВЛЕНО: поддержка нескольких файлов через поле "files"
+app.post('/v1/chat/completions', authenticate, upload.array('files', 50), (req, res, next) => {
     if (req.body.data) {
         try {
             const parsedData = JSON.parse(req.body.data);
@@ -42,15 +43,17 @@ app.post('/v1/chat/completions', authenticate, upload.single('file'), (req, res,
             return res.status(400).json({ error: 'Invalid JSON in data field' });
         }
     }
-    if (req.file) {
-        req.body.file = req.file;
+    // Преобразуем массив файлов из multer в req.body.files
+    if (req.files && req.files.length) {
+        req.body.files = req.files;
+    } else {
+        req.body.files = [];
     }
     next();
 }, chatRoute);
 
 app.post('/v1/files/upload', authenticate, upload.single('file'), uploadSingle);
-
-app.post('/v1/files/upload-multiple', authenticate, upload.array('files', 10), uploadMultiple);
+app.post('/v1/files/upload-multiple', authenticate, upload.array('files', 50), uploadMultiple);
 
 app.post('/v1/chat/new', authenticate, async (req, res) => {
     if (!isReady()) {
@@ -58,21 +61,8 @@ app.post('/v1/chat/new', authenticate, async (req, res) => {
     }
     const { expert_mode, restore } = req.body;
     const client = getClient();
-    const apiKey = req.headers.authorization?.replace('Bearer ', '');
     try {
         await client.newChat({ expertMode: expert_mode, restore: restore || false });
-        
-        if (!restore && apiKey && process.env.ENABLE_RAG === 'true') {
-            try {
-                const { getHistoryStore } = require('./dist/rag/init.js');
-                const store = await getHistoryStore(apiKey);
-                await store.clear();
-                console.log(`🧹 RAG history cleared for new chat session (${apiKey})`);
-            } catch (err) {
-                console.warn('Failed to clear RAG store:', err);
-            }
-        }
-        
         res.json({ success: true, expert_mode, restore });
     } catch (err) {
         console.error('Failed to create new chat:', err);

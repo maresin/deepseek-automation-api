@@ -1,4 +1,3 @@
-// server-modules/routes/chat.js
 const path = require('path');
 const fs = require('fs');
 const { getClient } = require('../state');
@@ -12,14 +11,9 @@ const {
     SendUserMessageTask
 } = require('../../dist');
 
-function truncateFromEnd(text, maxLen) {
-    if (text.length <= maxLen) return text;
-    return text.slice(0, maxLen) + '...';
-}
-
 module.exports = async function chatRoute(req, res) {
     const startTime = Date.now();
-    const { messages, tools, extra_body, file } = req.body;
+    const { messages, tools, extra_body, files } = req.body; // files - массив
     const client = getClient();
     if (!client) return res.status(503).json({ error: 'Client not ready' });
 
@@ -37,42 +31,41 @@ module.exports = async function chatRoute(req, res) {
     const useSearchRAG = process.env.ENABLE_RAG === 'true' && client.inRefreshedChat === true && store !== null;
 
     const userMessage = messages.filter(m => m.role === 'user').pop();
-    if (!userMessage && !file) return res.status(400).json({ error: 'No user message or file provided' });
+    if (!userMessage && (!files || files.length === 0)) {
+        return res.status(400).json({ error: 'No user message or files provided' });
+    }
 
-    const originalUserText = userMessage ? userMessage.content : '';
-    let finalUserText = originalUserText;
+    let userText = userMessage ? userMessage.content : '';
 
-    if (useSearchRAG && originalUserText) {
+    // --- RAG обогащение (без изменений) ---
+    if (useSearchRAG && userText) {
         try {
-            const results = await store.search(originalUserText, client.currentChatId, 15);
+            const results = await store.search(userText, client.currentChatId, 15);
             if (results.length > 0) {
                 const exchangeMap = new Map();
                 for (const r of results) {
                     if (r.item.type === 'exchange') {
-                        const key = `${r.item.chatId}|${r.item.user}|${r.item.assistant}`;
+                        const key = `${r.item.user}||${r.item.assistant}`;
                         if (!exchangeMap.has(key)) exchangeMap.set(key, []);
                         exchangeMap.get(key).push(r.item);
                     }
                 }
-                const fullAnswers = [];
-                const MAX_FRAGMENT_CHARS = parseInt(process.env.RAG_FRAGMENT_MAX_CHARS || '1200', 10);
+                const contextBlocks = [];
                 for (const chunks of exchangeMap.values()) {
                     chunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
                     const fullCombined = chunks.map(c => c.combined).join('');
-                    let assistantPart = fullCombined;
-                    if (fullCombined.includes('\nA: ')) assistantPart = fullCombined.split('\nA: ')[1];
-                    assistantPart = truncateFromEnd(assistantPart, MAX_FRAGMENT_CHARS);
-                    fullAnswers.push(assistantPart);
+                    const user = chunks[0].user;
+                    const assistant = chunks[0].assistant;
+                    contextBlocks.push(`User: ${user}\nAssistant: ${assistant}\n---\n${fullCombined}`);
                 }
-                if (fullAnswers.length) {
-                    const searchResults = {
-                        query: originalUserText,
-                        fragments: fullAnswers.map((content, idx) => ({ id: idx + 1, content }))
-                    };
-                    const jsonBlock = JSON.stringify(searchResults, null, 2);
-                    const instruction = `I have retrieved relevant previous conversation fragments. Use them if they help answer the user's question.\n\n<search_results>\n${jsonBlock}\n</search_results>\n\nNow answer the user's question: ${originalUserText}`;
-                    finalUserText = instruction;
-                    console.log(`📚 RAG: added ${fullAnswers.length} unique fragment(s) (total ~${jsonBlock.length} chars)`);
+                for (const r of results) {
+                    if (r.item.type === 'file') {
+                        contextBlocks.push(`[From file ${r.item.fileName}]: ${r.item.content.substring(0, 800)}`);
+                    }
+                }
+                if (contextBlocks.length) {
+                    userText = `Relevant previous conversation:\n${contextBlocks.join('\n---\n')}\n\n---\n\n${userText}`;
+                    console.log(`📚 Enriched prompt with ${exchangeMap.size} exchange(s) and ${results.filter(r => r.item.type === 'file').length} file chunk(s)`);
                 }
             }
         } catch (err) {
@@ -80,18 +73,23 @@ module.exports = async function chatRoute(req, res) {
         }
     }
 
-    let userFilePath = null;
-    if (file) {
-        const ext = path.extname(file.originalname);
-        userFilePath = path.join(process.cwd(), 'uploads', `${Date.now()}${ext}`);
-        fs.renameSync(file.path, userFilePath);
+    // --- Сохраняем загруженные файлы во временные файлы ---
+    const tempFilePaths = [];
+    if (files && files.length) {
+        for (const file of files) {
+            const ext = path.extname(file.originalname);
+            const tempPath = path.join(process.cwd(), 'uploads', `${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`);
+            fs.renameSync(file.path, tempPath);
+            tempFilePaths.push(tempPath);
+        }
     }
 
-    const prompt = buildPrompt(finalUserText, tools);
-    console.log(`📤 Question: ${originalUserText.substring(0, 100) || 'No text'}...`);
+    const prompt = userText ? buildPrompt(userText, tools) : '';
+    console.log(`📤 Question: ${userText?.substring(0, 100) || 'No text'}...`);
     if (tools?.length) console.log(`🔧 Tools: ${tools.map(t => t.function.name).join(', ')}`);
-    if (userFilePath) console.log(`📎 User file: ${file.originalname}`);
+    if (tempFilePaths.length) console.log(`📎 Files included: ${tempFilePaths.map(p => path.basename(p)).join(', ')}`);
 
+    // --- Очередь задач ---
     const tasksToAdd = [];
     if (extra_body?.expert_mode !== undefined && !client.isChatStarted()) {
         tasksToAdd.push(new SwitchExpertModeTask(extra_body.expert_mode));
@@ -103,7 +101,7 @@ module.exports = async function chatRoute(req, res) {
         tasksToAdd.push(new SwitchWebSearchTask(extra_body.web_search));
     }
 
-    const userTask = new SendUserMessageTask(prompt, userFilePath);
+    const userTask = new SendUserMessageTask(prompt, tempFilePaths);
     tasksToAdd.push(userTask);
 
     let result;
@@ -116,13 +114,18 @@ module.exports = async function chatRoute(req, res) {
         }
     }
 
+    // Сохранение в RAG
     if (store && userMessage && result) {
-        await store.addExchange(client.currentChatId, originalUserText, result);
+        await store.addExchange(client.currentChatId, userMessage.content, result);
         console.log('💾 Exchange saved to RAG store');
     }
 
-    if (userFilePath && fs.existsSync(userFilePath)) fs.unlinkSync(userFilePath);
+    // Очистка временных файлов
+    for (const p of tempFilePaths) {
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
 
+    // --- Формирование ответа (как было) ---
     let parsedResponse, isToolCall = false;
     try {
         parsedResponse = JSON.parse(result);
@@ -143,11 +146,7 @@ module.exports = async function chatRoute(req, res) {
             object: 'chat.completion',
             created: Math.floor(Date.now() / 1000),
             model: 'deepseek-chat',
-            choices: [{
-                index: 0,
-                message: { role: 'assistant', content: null, tool_calls: toolCalls },
-                finish_reason: 'tool_calls'
-            }],
+            choices: [{ index: 0, message: { role: 'assistant', content: null, tool_calls: toolCalls }, finish_reason: 'tool_calls' }],
             usage: {
                 prompt_tokens: Math.ceil(prompt.length / 4),
                 completion_tokens: Math.ceil(result.length / 4),
@@ -160,11 +159,7 @@ module.exports = async function chatRoute(req, res) {
             object: 'chat.completion',
             created: Math.floor(Date.now() / 1000),
             model: 'deepseek-chat',
-            choices: [{
-                index: 0,
-                message: { role: 'assistant', content: parsedResponse.content || result },
-                finish_reason: 'stop'
-            }],
+            choices: [{ index: 0, message: { role: 'assistant', content: parsedResponse.content || result }, finish_reason: 'stop' }],
             usage: {
                 prompt_tokens: Math.ceil(prompt.length / 4),
                 completion_tokens: Math.ceil(result.length / 4),

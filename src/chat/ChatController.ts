@@ -1,3 +1,4 @@
+import path from 'path';
 import { BrowserManager } from '../browser/BrowserManager.js';
 import { Selectors } from '../browser/Selectors.js';
 
@@ -6,7 +7,8 @@ export class ChatController {
 
     async clearInput(): Promise<void> {
         const page = this.browserManager.page!;
-        // Ждём, что основное поле видимо и активно
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(100);
         await page.waitForSelector(Selectors.mainTextarea, { state: 'visible' });
         await page.click(Selectors.mainTextarea);
         await page.keyboard.press('Control+A');
@@ -15,6 +17,8 @@ export class ChatController {
 
     async typeMessage(message: string): Promise<void> {
         const page = this.browserManager.page!;
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(100);
         await page.waitForSelector(Selectors.mainTextarea, { state: 'visible' });
         await page.click(Selectors.mainTextarea);
         if (message.length <= 50) {
@@ -44,48 +48,45 @@ export class ChatController {
 
     async attachFile(filePath: string): Promise<void> {
         const page = this.browserManager.page!;
-        
         // Ждём появления основного текстового поля
         const textarea = await page.waitForSelector(Selectors.mainTextarea, { state: 'visible', timeout: 10000 });
         const box = await textarea.boundingBox();
         if (!box) throw new Error('Cannot get textarea position');
-        
-        // Вычисляем координаты для клика: правее поля ввода (отступ ~40px, можно подстроить)
+        // Координаты кнопки загрузки (скрепка) – справа от поля
         const x = box.x + box.width + 40;
         const y = box.y + box.height / 2;
-        
-        // Кликаем по координатам — это должна быть кнопка загрузки (скрепка)
         await page.mouse.click(x, y);
         await page.waitForTimeout(500);
-        
-        // Закрываем возможное окно поиска (если клик попал не туда)
+        // Закрываем возможное окно поиска
         await page.keyboard.press('Escape');
         await page.waitForTimeout(200);
-        
-        // Находим скрытый input[type="file"] и программно загружаем файл
+        // Находим input и загружаем файл программно
         const fileInput = await page.$(Selectors.fileInput);
         if (!fileInput) throw new Error('File input not found');
         await fileInput.setInputFiles(filePath);
-        
         try {
             await page.waitForSelector('.ds-loading', { timeout: 5000 });
             await page.waitForSelector('.ds-loading', { state: 'hidden', timeout: 60000 });
         } catch { }
-        
         await page.waitForSelector(Selectors.sendButton, { timeout: 10000 });
-        
-        // Дополнительный Escape для закрытия любого модального окна
+        // Закрываем окно поиска (на всякий случай) и возвращаем фокус
         await page.keyboard.press('Escape');
         await page.focus(Selectors.mainTextarea);
-        
-        console.log(`   ✅ File attached and loaded`);
+        console.log(`   ✅ File attached: ${path.basename(filePath)}`);
+    }
+
+    async attachFiles(filePaths: string[]): Promise<void> {
+        for (const filePath of filePaths) {
+            await this.attachFile(filePath);
+            await this.browserManager.page!.waitForTimeout(500);
+        }
     }
 
     async removeSelectedFile(): Promise<void> {
         const page = this.browserManager.page!;
         const deleteIcon = await page.$(Selectors.deleteFileIcon);
         if (!deleteIcon) return;
-        const button = await deleteIcon.evaluateHandle(path => path.closest('button, div[role="button"], div[tabindex="0"]'));
+        const button = await deleteIcon.evaluateHandle(el => el.closest('button, div[role="button"], div[tabindex="0"]'));
         if (!button) return;
         await button.evaluate((btn: HTMLElement) => btn.click());
         await page.waitForTimeout(500);

@@ -40,7 +40,7 @@ export class TransitionAndRetryTask extends Task<void> {
         }
 
         console.log('🔁 Retrying original task in new chat...');
-        const retryTask = new SendUserMessageTask(this.text, this.filePath);
+        const retryTask = new SendUserMessageTask(this.text, this.filePath ? [this.filePath] : undefined);
         await client.taskQueue.add(retryTask, 'normal');
 
         console.log('✅ Transition and retry completed');

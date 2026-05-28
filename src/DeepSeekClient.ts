@@ -199,7 +199,7 @@ export class DeepSeekClient {
     async sendMessage(message: string, features: DeepSeekFeatures = {}, options: SendMessageOptions = {}): Promise<DeepSeekResponse> {
         const startTime = Date.now();
         const { SendUserMessageTask } = await import('./tasks/SendUserMessageTask.js');
-        const task = new SendUserMessageTask(message, options.filePath);
+        const task = new SendUserMessageTask(message, options.filePath ? [options.filePath] : undefined);
         const content = await this.taskQueue.add(task);
         return {
             content,
