@@ -1,4 +1,3 @@
-// server-modules/utils.js
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
@@ -40,9 +39,45 @@ function getSystemPrompt() {
     return fs.readFileSync(SYSTEM_PROMPT_FILE, 'utf-8');
 }
 
-function buildPrompt(userMessage, tools) {
-    if (!tools || tools.length === 0) return userMessage;
-    return `Tools available (JSON):\n${JSON.stringify(tools, null, 2)}\n\nUser question: ${userMessage}`;
+// ИЗМЕНЕНА: теперь принимает массив messages, а не строку
+function buildPrompt(messages, tools) {
+    let conversationText = '';
+
+    // Проверяем, нужно ли добавлять префиксы ролей
+    const hasSystem = messages.some(m => m.role === 'system');
+    const hasMultiple = messages.length > 1;
+    const needPrefixes = hasSystem || hasMultiple;
+
+    if (!needPrefixes && messages.length === 1 && messages[0].role === 'user') {
+        // Обратная совместимость: одно сообщение user без префикса
+        conversationText = messages[0].content;
+    } else {
+        // Полная история с префиксами
+        for (const msg of messages) {
+            switch (msg.role) {
+                case 'system':
+                    conversationText += `System: ${msg.content}\n`;
+                    break;
+                case 'user':
+                    conversationText += `User: ${msg.content}\n`;
+                    break;
+                case 'assistant':
+                    conversationText += `Assistant: ${msg.content}\n`;
+                    break;
+                default:
+                    conversationText += `${msg.role}: ${msg.content}\n`;
+            }
+        }
+    }
+
+    // Добавляем описание tools, если они есть
+    let toolsText = '';
+    if (tools && tools.length) {
+        toolsText = `\n\nTools available (JSON):\n${JSON.stringify(tools, null, 2)}\n\n` +
+                    `When you need to use a tool, respond with ONLY JSON: {"tool_calls": [{"name": "...", "arguments": {...}}]}\n\n`;
+    }
+
+    return toolsText + conversationText;
 }
 
 module.exports = {

@@ -26,24 +26,153 @@ OpenAI‑compatible API server for **DeepSeek** (free web version) with tool cal
 
 Perform the installation according to the instructions.
 
-Then register and chat:
+Then register and start chatting:
+
+### 1. Get an API key
 
 ```bash
 curl -X POST http://localhost:3000/v1/register \
   -H "Content-Type: application/json" \
   -d '{"email":"your@email.com","password":"your_password"}'
+```
 
+The response will contain an `api_key`. Save it – you'll need it for all subsequent requests.
+
+### 2. Basic chat (single message)
+
+```bash
 curl -X POST http://localhost:3000/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hello!"}]}'
+```
 
+### 3. Chat with a system instruction
+
+```bash
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "system", "content": "You are an assistant that speaks like a pirate."},
+      {"role": "user", "content": "Tell me a joke."}
+    ]
+  }'
+```
+
+### 4. Multi-turn conversation (full history)
+
+```bash
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What is the capital of France?"},
+      {"role": "assistant", "content": "The capital of France is Paris."},
+      {"role": "user", "content": "What is the most famous museum there?"}
+    ]
+  }'
+```
+
+### 5. Uploading files (single or multiple)
+
+**Single file** (field `file`):
+
+```bash
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -F "file=@document.pdf" \
+  -F 'data={"messages":[{"role":"user","content":"Briefly describe this document"}]}'
+```
+
+**Multiple files** (field `files`, up to 10 files):
+
+```bash
 curl -X POST http://localhost:3000/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -F "files=@file1.pdf" \
   -F "files=@file2.docx" \
-  -F 'data={"messages":[{"role":"user","content":"Analyze these documents"}]}'
+  -F "files=@image.jpg" \
+  -F 'data={"messages":[{"role":"user","content":"Analyze these files and the image"}]}'
 ```
+
+> **Note:** The server processes files sequentially – the DeepSeek web interface allows attaching several files at once.
+
+### 6. Tool calling (function calling)
+
+Pass tool descriptions in the `tools` field. The model will respond with a JSON containing `tool_calls`.
+
+```bash
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role": "user", "content": "What is the weather in Moscow?"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current weather for a city",
+        "parameters": {
+          "type": "object",
+          "properties": {"location": {"type": "string"}},
+          "required": ["location"]
+        }
+      }
+    }]
+  }'
+```
+
+### 7. Enable DeepThink, Web Search or Expert mode
+
+Pass an `extra_body` object with the desired flags.
+
+```bash
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role": "user", "content": "Explain quantum computing"}],
+    "extra_body": {
+      "deepthink": true,
+      "web_search": true,
+      "expert_mode": true
+    }
+  }'
+```
+
+### 8. Create a new chat (reset the conversation)
+
+```bash
+curl -X POST http://localhost:3000/v1/chat/new \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"expert_mode": false, "restore": false}'
+```
+
+- `restore: true` – attempt to restore the last chat from history.
+- `expert_mode` – switch between Instant (fast) and Expert (detailed) modes.
+
+### 9. Check the current mode (Expert/Instant)
+
+```bash
+curl -X GET http://localhost:3000/v1/settings/expert/status \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+### 10. Server health check
+
+```bash
+curl http://localhost:3000/health
+```
+
+---
+
+All examples assume the server is running on `http://localhost:3000`. Change the port using the `PORT` environment variable if needed.
+
+For more detailed information (RAG, session recovery, context management), see the full documentation.
 
 ---
 

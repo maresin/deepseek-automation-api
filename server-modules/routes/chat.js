@@ -13,7 +13,7 @@ const {
 
 module.exports = async function chatRoute(req, res) {
     const startTime = Date.now();
-    const { messages, tools, extra_body, files } = req.body; // files - массив
+    const { messages, tools, extra_body, files } = req.body;
     const client = getClient();
     if (!client) return res.status(503).json({ error: 'Client not ready' });
 
@@ -30,14 +30,15 @@ module.exports = async function chatRoute(req, res) {
     }
     const useSearchRAG = process.env.ENABLE_RAG === 'true' && client.inRefreshedChat === true && store !== null;
 
-    const userMessage = messages.filter(m => m.role === 'user').pop();
-    if (!userMessage && (!files || files.length === 0)) {
+    // ИЗМЕНЕНО: получаем последнее сообщение пользователя отдельно (для RAG и сохранения)
+    const userMessageObj = messages.filter(m => m.role === 'user').pop();
+    if (!userMessageObj && (!files || files.length === 0)) {
         return res.status(400).json({ error: 'No user message or files provided' });
     }
+    const userText = userMessageObj ? userMessageObj.content : '';
 
-    let userText = userMessage ? userMessage.content : '';
-
-    // --- RAG обогащение (без изменений) ---
+    // RAG обогащение (без изменений)
+    let enrichedText = userText;
     if (useSearchRAG && userText) {
         try {
             const results = await store.search(userText, client.currentChatId, 15);
@@ -64,7 +65,7 @@ module.exports = async function chatRoute(req, res) {
                     }
                 }
                 if (contextBlocks.length) {
-                    userText = `Relevant previous conversation:\n${contextBlocks.join('\n---\n')}\n\n---\n\n${userText}`;
+                    enrichedText = `Relevant previous conversation:\n${contextBlocks.join('\n---\n')}\n\n---\n\n${userText}`;
                     console.log(`📚 Enriched prompt with ${exchangeMap.size} exchange(s) and ${results.filter(r => r.item.type === 'file').length} file chunk(s)`);
                 }
             }
@@ -73,7 +74,7 @@ module.exports = async function chatRoute(req, res) {
         }
     }
 
-    // --- Сохраняем загруженные файлы во временные файлы ---
+    // Сохраняем загруженные файлы во временные файлы
     const tempFilePaths = [];
     if (files && files.length) {
         for (const file of files) {
@@ -84,12 +85,14 @@ module.exports = async function chatRoute(req, res) {
         }
     }
 
-    const prompt = userText ? buildPrompt(userText, tools) : '';
+    // ИЗМЕНЕНО: передаём весь массив messages в buildPrompt
+    const fullMessages = messages || [];
+    const prompt = buildPrompt(fullMessages, tools);
     console.log(`📤 Question: ${userText?.substring(0, 100) || 'No text'}...`);
     if (tools?.length) console.log(`🔧 Tools: ${tools.map(t => t.function.name).join(', ')}`);
     if (tempFilePaths.length) console.log(`📎 Files included: ${tempFilePaths.map(p => path.basename(p)).join(', ')}`);
 
-    // --- Очередь задач ---
+    // Очередь задач (без изменений)
     const tasksToAdd = [];
     if (extra_body?.expert_mode !== undefined && !client.isChatStarted()) {
         tasksToAdd.push(new SwitchExpertModeTask(extra_body.expert_mode));
@@ -114,9 +117,9 @@ module.exports = async function chatRoute(req, res) {
         }
     }
 
-    // Сохранение в RAG
-    if (store && userMessage && result) {
-        await store.addExchange(client.currentChatId, userMessage.content, result);
+    // Сохранение в RAG (используем userMessageObj.content)
+    if (store && userMessageObj && result) {
+        await store.addExchange(client.currentChatId, userMessageObj.content, result);
         console.log('💾 Exchange saved to RAG store');
     }
 
@@ -125,7 +128,7 @@ module.exports = async function chatRoute(req, res) {
         if (fs.existsSync(p)) fs.unlinkSync(p);
     }
 
-    // --- Формирование ответа (как было) ---
+    // Формирование ответа (без изменений)
     let parsedResponse, isToolCall = false;
     try {
         parsedResponse = JSON.parse(result);
@@ -146,7 +149,11 @@ module.exports = async function chatRoute(req, res) {
             object: 'chat.completion',
             created: Math.floor(Date.now() / 1000),
             model: 'deepseek-chat',
-            choices: [{ index: 0, message: { role: 'assistant', content: null, tool_calls: toolCalls }, finish_reason: 'tool_calls' }],
+            choices: [{
+                index: 0,
+                message: { role: 'assistant', content: null, tool_calls: toolCalls },
+                finish_reason: 'tool_calls'
+            }],
             usage: {
                 prompt_tokens: Math.ceil(prompt.length / 4),
                 completion_tokens: Math.ceil(result.length / 4),
@@ -159,7 +166,11 @@ module.exports = async function chatRoute(req, res) {
             object: 'chat.completion',
             created: Math.floor(Date.now() / 1000),
             model: 'deepseek-chat',
-            choices: [{ index: 0, message: { role: 'assistant', content: parsedResponse.content || result }, finish_reason: 'stop' }],
+            choices: [{
+                index: 0,
+                message: { role: 'assistant', content: parsedResponse.content || result },
+                finish_reason: 'stop'
+            }],
             usage: {
                 prompt_tokens: Math.ceil(prompt.length / 4),
                 completion_tokens: Math.ceil(result.length / 4),

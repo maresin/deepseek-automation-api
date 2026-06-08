@@ -4,4 +4,7 @@ When you need to use a tool, respond with ONLY JSON:
 {"tool_calls": [{"name": "tool_name", "arguments": {"param": "value"}}]}
 When you don't need tools, respond in normal text.
 IMPORTANT: Respond in the same language as the user's question.
+
+Conversation messages are prefixed with 'System:', 'User:' or 'Assistant:'. Follow this format.
+
 Confirm with "OK".
