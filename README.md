@@ -1,351 +1,598 @@
 # DeepSeek Automation API
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 
-OpenAI‑compatible API server for **DeepSeek** (free web version) with tool calling, web search, file upload, DeepThink (R1), session recovery, automatic context management, clipboard isolation, and **optional Retrieval-Augmented Generation (RAG)** for long‑term conversation memory.
+OpenAI-compatible API server for the **DeepSeek web interface**, driven
+by Playwright. Local, free, self-hosted.
 
-> **Why?** DeepSeek offers a powerful free web interface, but no free API. This project automates the web UI using Playwright, giving you a local OpenAI‑compatible API – **completely free**.
+DeepSeek offers a capable free web interface but no free API. This
+project automates the UI with Playwright and exposes an OpenAI-shaped
+HTTP API on top. Everything runs locally: no keys to buy, no quota to
+negotiate, no data leaving your machine.
+
+The interesting part is not the automation itself — it is the layers
+around it: context management, session recovery, RAG, and error
+handling. Those are what turn a browser-driven prototype into something
+usable for real, long-running work.
 
 ---
 
-## Table of Contents
+## Table of contents
 
-- [Quick Start](#quick-start)
-- [Installation](#installation)
-- [Configuration (.env)](#configuration-env)
-- [API Endpoints](#api-endpoints)
-- [Retrieval-Augmented Generation (RAG)](#retrieval-augmented-generation-rag)
-- [Automatic Context Management & Snapshots](#automatic-context-management--snapshots)
+- [Highlights](#highlights)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [API endpoints](#api-endpoints)
+- [OpenAI compatibility](#openai-compatibility)
+- [Session management and transitions](#session-management-and-transitions)
+- [RAG](#rag)
 - [Examples](#examples)
-- [Known Limitations & Caveats](#known-limitations--caveats)
-- [Troubleshooting](#troubleshooting)
+- [Testing](#testing)
+- [Limitations](#limitations)
+- [Documentation](#documentation)
+- [License](#license)
 
 ---
 
-## Quick Start
+## Highlights
 
-Perform the installation according to the instructions below. Then register and try a basic chat:
-
-### 1. Get an API key
-
-```bash
-curl -X POST http://localhost:3000/v1/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"your@email.com","password":"your_password"}'
-```
-
-The response will contain an `api_key`. Save it – you'll need it for all subsequent requests.
-
-### 2. Basic chat (single message)
-
-```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Hello!"}]}'
-```
-
-### 3. Single file upload
-
-```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -F "file=@document.pdf" \
-  -F 'data={"messages":[{"role":"user","content":"Briefly describe this document"}]}'
-```
-
-> For more advanced usage (system instructions, multi‑turn conversations, multiple files, tool calling, etc.), see the [Examples](#examples) section.
+- **OpenAI-compatible** `/v1/chat/completions`, `/v1/files`, tool
+  calling, multi-turn, `system` / `user` / `assistant` roles.
+- **Two-phase file upload** — get a `file_id` from `/v1/files`,
+  reference it inside `content[]`. Mirrors the OpenAI Assistants flow.
+- **Automatic context management** with two thresholds (70% / 90%), a
+  single snapshot file, and a transition to a new chat when the limit
+  approaches.
+- **Optional RAG** over the entire conversation history — linear JSON
+  index, local embedding model, no external vector database.
+- **Session recovery** across restarts — browser cookies in
+  `state.json`, chat session in `chat_state.json`.
+- **Four recovery modes**, selected via `.env`: plain (nothing survives
+  a transition), snapshot-only, RAG-only, both.
+- **DeepThink (R1)** and **Web Search** toggles, per request.
+- **Server Busy detection** with a clean shutdown — after DeepSeek
+  returns this placeholder, retrying is pointless for hours.
+- **Clipboard isolation.** DeepSeek's Copy button writes to
+  `navigator.clipboard`, which is shared across pages in a Chromium
+  profile. We replace it with a per-page buffer so one request cannot
+  read what another copied.
+- **Selector validation on startup.** The server refuses to run if
+  critical UI selectors are missing. Better a hard failure than silent
+  partial behavior.
 
 ---
 
-## Installation
-
-### Prerequisites
-- Node.js **16+** and npm
-- A free DeepSeek account (https://chat.deepseek.com)
-
-### Steps
-
-Clone the repository and navigate to the program folder:
+## Quick start
 
 ```bash
 git clone https://github.com/maresin/deepseek-automation-api.git
 cd deepseek-automation-api
+
+npm install
+npm run build
+
+mkdir -p browsers
+PLAYWRIGHT_BROWSERS_PATH=./browsers npx playwright install chromium
 ```
 
-Install the browser dependencies in the program folder:
-
-```bash
-npm install               # install dependencies
-npm run build             # compile TypeScript
-mkdir -p browsers         # create local browser directory
-PLAYWRIGHT_BROWSERS_PATH=./browsers npx playwright install chromium   # install Chromium into ./browsers
-```
-
-Create a `.env` file (see [Configuration](#configuration-env) below). Then:
+Create `.env` (see [Configuration](#configuration)), then:
 
 ```bash
 npm start
 ```
 
-The server runs on `http://localhost:3000`.
+The server listens on `http://localhost:3000`. On first launch it
+registers a session and writes `.api-key`.
 
----
+### First request
 
-## Configuration (.env)
+```bash
+# 1. Register — returns an API key
+curl -X POST http://localhost:3000/v1/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"your@email.com","password":"your_password"}'
 
-Create a `.env` file in the project root. Below is a minimal example:
-
-```ini
-PORT=3000
-DEEPSEEK_EMAIL=your@email.com
-DEEPSEEK_PASSWORD=your_password
-RESTORE_SESSION=false
-
-# RAG features
-ENABLE_RAG=true
-RAG_CHUNK_SIZE=2000
-RAG_FRAGMENT_MAX_CHARS=1200
-DEEPSEEK_DEEPTHINK_MULTIPLIER=2.5
-
-# Context limit (characters)
-DEEPSEEK_MAX_CONTEXT_CHARS=2400000
+# 2. Chat
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-Full variable reference:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | Server port | `3000` |
-| `RESTORE_SESSION` | Restore last chat from browser history on startup | `false` |
-| `DEEPSEEK_EMAIL` | Email for auto‑login (optional) | – |
-| `DEEPSEEK_PASSWORD` | Password for auto‑login (optional) | – |
-| `ENABLE_RAG` | Enable RAG (embedding + search) | `false` |
-| `RAG_CHUNK_SIZE` | Characters per chunk (fits embedding model limit) | `2000` |
-| `RAG_FRAGMENT_MAX_CHARS` | Max length of retrieved text shown to the model | `1200` |
-| `DEEPSEEK_DEEPTHINK_MULTIPLIER` | Multiply response length when DeepThink is on | `2.5` |
-| `DEEPSEEK_MAX_CONTEXT_CHARS` | Max context size before auto‑transition | `2400000` |
-| `DEEPSEEK_STATE_PATH` | Browser state file path | `./state.json` |
-| `DEEPSEEK_API_KEY_PATH` | API key storage path | `./.api-key` |
-| `DEEPSEEK_SYSTEM_PROMPT_PATH` | System prompt file path | `./prompts/system_prompt.txt` |
-
-> **Note:** The RAG embedding model (`Xenova/all-MiniLM-L6-v2`) is loaded on the first request – expect a few seconds delay.
+For Python / JavaScript / cURL walkthroughs covering every endpoint,
+see [`examples/`](examples/README.md).
 
 ---
 
-## API Endpoints
+## Configuration
 
-All endpoints follow the OpenAI API specification where applicable.
+Create a `.env` file in the project root. Only `DEEPSEEK_EMAIL` and
+`DEEPSEEK_PASSWORD` are needed for automatic login; everything else has
+a sensible default.
+
+### Core
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3000` | HTTP port |
+| `DEEPSEEK_EMAIL` | — | Account email (auto-login) |
+| `DEEPSEEK_PASSWORD` | — | Account password (auto-login) |
+| `DEEPSEEK_HEADLESS` | `false` | Run Chromium without a window |
+
+### Recovery modes
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENABLE_RESTORE` | `false` | Reopen the last chat on startup |
+| `ENABLE_SNAPSHOT` | `false` | Snapshot cycle at 70% / 90% |
+| `ENABLE_RAG` | `false` | Index history and search it after each transition |
+
+### Paths
+
+| Variable | Default |
+|---|---|
+| `DEEPSEEK_STATE_PATH` | `./state.json` |
+| `DEEPSEEK_CHAT_STATE_PATH` | `./chat_state.json` |
+| `DEEPSEEK_API_KEY_PATH` | `./.api-key` |
+| `DEEPSEEK_SYSTEM_PROMPT_PATH` | `./prompts/system_prompt.txt` |
+
+### Context and RAG tuning
+
+| Variable | Default | Description |
+|---|---|---|
+| `DEEPSEEK_MAX_CONTEXT_CHARS` | `2400000` | Fallback limit before language analysis |
+| `DEEPSEEK_DEEPTHINK_MULTIPLIER` | `2.5` | Context multiplier when DeepThink is on |
+| `RAG_CHUNK_SIZE` | `2000` | Characters per embedding chunk |
+| `RAG_RECENCY_FLOOR` | `0.7` | Minimum recency multiplier in ranking |
+| `RAG_DATA_DIR` | `./rag_data` | Directory for per-session indexes |
+
+> The embedding model (`Xenova/all-MiniLM-L6-v2`) is loaded on the first
+> RAG request. Expect a 2–3 second delay on that one request.
+
+---
+
+## API endpoints
+
+All endpoints follow the OpenAI specification where applicable.
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/register` | Create session and get API key |
-| `POST` | `/v1/chat/completions` | Send a message (supports `tools`, `extra_body`) |
-| `POST` | `/v1/chat/new` | Create a new chat (optionally restore last chat) |
-| `POST` | `/v1/files/upload` | Upload a single file (PDF, image, text, code, etc.) |
-| `POST` | `/v1/files/upload-multiple` | Upload up to 10 files |
-| `GET` | `/v1/settings/expert/status` | Get current expert/instant mode |
+|---|---|---|
+| `POST` | `/v1/register` | Create session, return API key |
+| `POST` | `/v1/chat/completions` | Chat (JSON or multipart) |
+| `POST` | `/v1/chat/new` | Create a new chat / restore the last |
+| `POST` | `/v1/chat/single` | One-shot request in a temporary chat |
+| `POST` | `/v1/files` | Upload a file, get a `file_id` |
+| `GET` | `/v1/context/status` | Context counter (debugging) |
 | `GET` | `/health` | Health check |
 
----
+### Rate limits
 
-## Retrieval-Augmented Generation (RAG)
+| Group | Limit |
+|---|---|
+| Global | 100 req/min |
+| Chat completions | 30 req/min |
+| File upload | 10 req/min |
 
-When enabled, the API **stores every user–assistant exchange** (and file contents) in a local vector index. Later, when the conversation continues in a **reused chat** (automatic context transition or manual `restore: true`), the system searches the stored history for fragments relevant to the current query and adds them to the prompt.
+### Response codes
 
-### When does RAG work?
+| Code | Meaning |
+|---|---|
+| `200` | Success |
+| `400` | Validation error |
+| `401` | Invalid API key |
+| `409` | Context exhausted — see [Session management](#session-management-and-transitions) |
+| `503` | DeepSeek backend busy — server shuts down |
+| `504` | Timeout waiting for a response |
 
-- **After an automatic context transition** (when the chat reaches ~90% of the limit) → RAG becomes active. The new chat inherits the old `chatId`, so old index entries are **not** cleared.
-- **When you manually restore a chat** (`/v1/chat/new` with `{"restore": true}`) → RAG active.
-- **When you start a brand new chat** (`/v1/chat/new` with `{"restore": false}`) → **the entire index is cleared**. This is intentional: a fresh topic should not be polluted by old history.
-
-### Example scenario
-
-1. Start a conversation about **physics** (RAG inactive because it's the first chat).
-2. Chat long enough to trigger a context transition (or manually restore).
-3. Now ask: *“What did we say about quantum mechanics?”* – the model will receive relevant fragments from the previous exchanges.
-4. If you later start a **new, unrelated chat** (e.g., `curl -X POST /v1/chat/new`), the index is wiped – the model forgets the physics discussion.
-
-### Performance notes
-
-- Embedding model runs **locally on CPU** – initial load takes ~2–3 seconds, subsequent embeddings are faster.
-- Linear search is used (no external FAISS). Works well up to several thousand chunks.
-- Chunk size is kept at 2000 characters to respect the embedding model’s 512‑token limit.
+Every successful chat response includes a `context_status` block with
+the current counter and warnings. Clients should inspect it on every
+response, not only on failure.
 
 ---
 
-## Automatic Context Management & Snapshots
+## OpenAI compatibility
 
-The server monitors total character count. When it reaches **70%** of the limit, it creates a `snapshot_70` (a compact summary). When a new message would exceed **90%**:
+### Multi-role messages
 
-- If the new total would be **≤95%**, a fresh snapshot (`snapshot_90`) is created.
-- Then the browser opens a **new chat**, uploads the latest snapshot, and resets the context counter.
-- The user sees **no interruption** – the conversation continues seamlessly.
+The OpenAI schema separates `system`, `user`, and `assistant`. DeepSeek
+Web has a single textarea and no notion of roles. We bridge this by
+prefixing each message in the prompt sent to the UI:
+
+```
+System: You are an assistant that speaks like a pirate.
+User: Tell me a joke.
+Assistant: Why did the pirate go to the Apple Store?
+User: Tell me another one.
+```
+
+Role prefixes are added when the message array contains a `system`
+message **or** more than one entry. A single `user` message without
+history is sent as-is, so the simplest possible request — one question,
+one answer — looks identical to a normal chat.
+
+### Two-phase file upload
+
+The OpenAI Assistants API splits file handling into two steps: upload a
+file, get a `file_id`, then reference it inside a message's `content[]`.
+We support the same flow:
+
+```bash
+# Step 1: upload, receive a file_id
+FILE_ID=$(curl -s -X POST http://localhost:3000/v1/files \
+  -H "Authorization: Bearer $API_KEY" \
+  -F "file=@document.pdf" | jq -r .id)
+
+# Step 2: reference it in a message
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"messages\": [{
+      \"role\": \"user\",
+      \"content\": [
+        { \"type\": \"text\", \"text\": \"Summarize this.\" },
+        { \"type\": \"file\", \"file\": { \"file_id\": \"$FILE_ID\" } }
+      ]
+    }]
+  }"
+```
+
+In this implementation `file_id` is **single-use**: after the request
+that references it, the file is deleted from disk (or handed to the RAG
+indexing queue, which deletes it after indexing). Reusing the same
+`file_id` returns `400 File not found for file_id`. To attach the same
+file again, upload it again.
+
+This differs from OpenAI, where `file_id` is stable and reusable. The
+reason is architectural: every request forwards the file to DeepSeek UI,
+and DeepSeek has no concept of stored file references. Making the
+semantics explicit here is cheaper than papering over it.
+
+### Tool calling
+
+Tools are passed as JSON in the OpenAI format. The server prepends a
+tool-description block and instructs the model to respond with
+`{"tool_calls": [{"name": ..., "arguments": {...}}]}`. When that
+response comes back, it is reshaped into the OpenAI format with
+`message.tool_calls` and `finish_reason: "tool_calls"`.
+
+The server does **not** execute tools. Tool execution is the client's
+responsibility — same as OpenAI, same as every well-behaved
+OpenAI-compatible server.
+
+### What is not compatible
+
+- **Streaming.** Responses are returned whole. `stream: true` is not
+  supported.
+- **Embeddings.** No `/v1/embeddings` endpoint.
+- **Image generation.** The `vision` input mode is supported (image
+  files are accepted), but generation is not.
+
+---
+
+## Session management and transitions
+
+This is the part that separates a working prototype from an API you can
+actually run against long conversations.
+
+### Two limits, not one
+
+The server tracks **two independent limits** simultaneously:
+
+| Limit | Where | What it means |
+|---|---|---|
+| **Estimated** | `context_status.chars_limit` | Our estimate: `1 000 000 tokens × language_coefficient`. May diverge from reality by ±20%. |
+| **Real** | `context_status.deepseek_length_limit.readable_percent` | What DeepSeek **actually** read. Appears only when the banner fires. |
+
+Estimated limits are calibrated for **DeepSeek-V4.1-Flash** (the current
+Web model, ~1 048 576-token context window) and the language mix of the
+session:
+
+| Language | Characters | Coefficient | Source |
+|---|---|---|---|
+| Latin | 3 000 000 | 3.0 | 0.3 tokens/char; ~10% safety margin |
+| Cyrillic | 2 400 000 | 2.4 | 0.42 tokens/char; calibrated empirically |
+| CJK | 1 000 000 | 1.0 | 0.6 tokens/char; conservative |
+
+Real sessions mix languages — the coefficient is a weighted average.
+
+The estimate is intentionally the **earlier** of the two signals.
+Transitions are triggered by the estimate; the real banner is an
+emergency path, not the normal one.
+
+### What happens at a transition
+
+At **70%** the server creates a snapshot (a compact summary of the
+conversation, produced with DeepThink). At **90%** the snapshot is
+refreshed and the browser opens a **new chat**. The conversation
+continues in the new chat — the client sees no interruption.
+
+Three modes are possible, selected by `.env`:
+
+| Mode | What transfers | What is lost |
+|---|---|---|
+| **Plain** (no flags) | Nothing | Entire history |
+| **Snapshot** (`ENABLE_SNAPSHOT=true`) | A compressed summary, ≤10% of the limit | Everything that did not fit in the summary |
+| **RAG** (`ENABLE_RAG=true`) | Top-5 fragments semantically close to the current query | Fragments unrelated to the current topic |
+| **Both** | Snapshot first, RAG on every subsequent request | See below |
+
+### Quality drops after every transition
+
+This is not a bug. It is a fundamental property of how browser-driven
+chat works: the new chat is a fresh model instance with no direct access
+to the previous conversation.
+
+**Even with both Snapshot and RAG enabled**, the model treats the
+transferred content as a **document**, not as its own memory. In
+practice this changes:
+
+- the **tone** — answers become more formal, less confident,
+- the **references** — "as we discussed earlier" becomes "according to
+  the attached document,"
+- the **detail** — the model stops filling gaps that are not in the
+  snapshot or fragments,
+- the **implicit context** — conventions established earlier in the
+  session ("all amounts in rubles") are lost unless they were captured.
+
+**What clients should do.** Keep facts that must survive a transition in
+the `system` message. The `system` message is resent on every request
+and is not affected by the transition. Conversation history is not a
+reliable storage medium for long sessions — the system message is.
+
+### Client responsibilities
+
+A correct client checks `context_status` on **every successful
+response**, not only on failure. The four relevant signals are:
+
+| Signal | Meaning | Recommended action |
+|---|---|---|
+| `warning: "context_above_70"` | Snapshot has been created | Log it. Prepare for a transition. |
+| `warning: "context_near_limit"` | Transition scheduled for the next request | Save state locally. |
+| HTTP 409 `context_exhausted` | Limit reached | Read `error.recovery`, call `/v1/chat/new`, retry. |
+| HTTP 503 `server_busy` | DeepSeek backend refusing | Wait for restart. Do not retry. |
+
+The response to a 409 contains both the estimated and the real
+readable percentage, so a client can detect if the estimate is
+systematically off and adjust `DEEPSEEK_MAX_CONTEXT_CHARS`.
+
+Full client-side protocol with state diagram and error handling for
+every code: [`docs/guides/session-management.md`](docs/guides/session-management.md).
+Reference implementation in three languages:
+[`examples/05_session.*`](examples/README.md).
+
+---
+
+## RAG
+
+Optional. Off by default. Enabled with `ENABLE_RAG=true`.
+
+### What it does
+
+When enabled, every user–assistant exchange and every text file attached
+to a chat is indexed into a per-session local store. After a transition,
+each new request runs a semantic search against that index and attaches
+the top-5 fragments as a file — with a `system`-level instruction to
+treat the file as a trustworthy source.
+
+Nothing is compressed. Fragments are passed verbatim, so exact
+formulations and code snippets survive across transitions.
+
+### Design choices worth noting
+
+- **No external vector database.** A linear JSON index of 384-dimensional
+  vectors, one file per session, is fast enough for the expected scale
+  (thousands of chunks) and keeps deployment to `npm install` + `npx
+  playwright install`. No Docker, no separate service, no persistence
+  layer to operate.
+
+- **Local embedding model.** `Xenova/all-MiniLM-L6-v2` runs on CPU. No
+  API keys, no rate limits, no network calls. First load is 2–3 seconds;
+  subsequent embeddings are sub-second.
+
+- **Multiplicative recency ranking.** The final score is
+  `similarity × (W + (1 − W) × recency)`, not `α × similarity + (1 − α) ×
+  recency`. The additive form does not work: similarity lives in
+  0.1–0.5, recency in 0–1, so a fresh but irrelevant fragment easily
+  beats an old but relevant one. Multiplication keeps semantics as the
+  primary signal and treats recency as a modifier in `[W, 1]`.
+
+- **No feedback loops.** Service files (`snapshot.txt`,
+  `rag_context_*.txt`) are explicitly skipped by the indexing queue.
+  Without this, RAG output would be re-indexed, and the store would grow
+  with copies of its own retrieved content.
+
+- **Background indexing.** Embedding is CPU-bound and can take minutes
+  for large files. It runs in a FIFO queue with a single worker,
+  decoupled from the HTTP request. The client receives the assistant's
+  reply as soon as DeepSeek responds; indexing happens afterward.
+
+- **Chat-scoped search.** Results from the current chat are excluded —
+  they are already in the model's context, no need to duplicate them.
+
+- **Index lifetime follows session lifetime.** The index survives
+  transitions (that is the whole point) but is cleared on an explicit
+  fresh start (`/v1/chat/new {restore: false}`). Starting a genuinely
+  new topic should not be polluted by the previous one.
+
+### What RAG does not do
+
+- It does **not** recover the full conversation. Only the top-5
+  fragments semantically closest to the current query are attached.
+- It does **not** replace the snapshot. Snapshot gives structural
+  continuity ("we were working on X, next step is Y"); RAG gives
+  topic-specific detail. They complement each other.
+- It does **not** eliminate degradation. It reduces the loss; it does
+  not remove it.
+
+Full design notes: [`docs/algorithms/rag.md`](docs/algorithms/rag.md).
 
 ---
 
 ## Examples
 
-### 1. Chat with a system instruction
+The [`examples/`](examples/README.md) directory contains a complete
+walkthrough of the API in three languages:
+
+| File | Covers |
+|---|---|
+| `01_getting_started` | Register, health, one message |
+| `02_conversation` | system + user, multi-turn, tool calling |
+| `03_features` | DeepThink, Web Search, both |
+| `04_files` | `file_id`, multipart single / multiple, mixed content |
+| `05_session` | Context monitoring, 409 / 503 / 401 / 504, transitions, degradation |
+
+Each language also ships a `common.{py,js,sh}` helper with `send_chat`,
+`print_response`, `print_context_status`. No third-party SDKs — the
+examples show the raw HTTP contract, so `context_status` and precise
+error codes stay visible.
+
+Two utility scripts are included:
 
 ```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "system", "content": "You are an assistant that speaks like a pirate."},
-      {"role": "user", "content": "Tell me a joke."}
-    ]
-  }'
-```
+# Static syntax check (no server required)
+./examples/lint.sh
 
-### 2. Multi-turn conversation (full history)
-
-```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "What is the capital of France?"},
-      {"role": "assistant", "content": "The capital of France is Paris."},
-      {"role": "user", "content": "What is the most famous museum there?"}
-    ]
-  }'
-```
-
-### 3. Multiple file upload (up to 10 files)
-
-```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -F "files=@file1.pdf" \
-  -F "files=@file2.docx" \
-  -F "files=@image.jpg" \
-  -F 'data={"messages":[{"role":"user","content":"Analyze these files and the image"}]}'
-```
-
-> **Note:** The server processes files sequentially – the DeepSeek web interface allows attaching several files at once.
-
-### 4. Tool calling (function calling)
-
-```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [{"role": "user", "content": "What is the weather in Moscow?"}],
-    "tools": [{
-      "type": "function",
-      "function": {
-        "name": "get_weather",
-        "description": "Get current weather for a city",
-        "parameters": {
-          "type": "object",
-          "properties": {"location": {"type": "string"}},
-          "required": ["location"]
-        }
-      }
-    }]
-  }'
-```
-
-### 5. Enable DeepThink, Web Search or Expert mode
-
-```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [{"role": "user", "content": "Explain quantum computing"}],
-    "extra_body": {
-      "deepthink": true,
-      "web_search": true,
-      "expert_mode": true
-    }
-  }'
-```
-
-### 6. Create a new chat (reset the conversation)
-
-```bash
-curl -X POST http://localhost:3000/v1/chat/new \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"expert_mode": false, "restore": false}'
-```
-
-- `restore: true` – attempt to restore the last chat from history.
-- `expert_mode` – switch between Instant (fast) and Expert (detailed) modes.
-
-### 7. Check the current mode (Expert/Instant)
-
-```bash
-curl -X GET http://localhost:3000/v1/settings/expert/status \
-  -H "Authorization: Bearer YOUR_API_KEY"
-```
-
-### 8. Server health check
-
-```bash
-curl http://localhost:3000/health
-```
-
-### 9. Manually restore a chat (keep RAG index)
-
-```bash
-curl -X POST /v1/chat/new \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -d '{"restore": true}'
-```
-
-### 10. Start a fresh chat (wipe RAG index)
-
-```bash
-curl -X POST /v1/chat/new \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -d '{"restore": false}'
+# Smoke-run 01_getting_started in all three languages
+# (requires a running server)
+./examples/smoke.sh
 ```
 
 ---
 
-## Known Limitations & Caveats
+## Testing
 
-**Latency**  
-Each request takes **15–30 seconds** because it uses a real browser. Designed for batch tasks, not real‑time chat.
+Three independent test suites.
 
-**RAG index lifetime**  
-Starting a new chat with `restore: false` **permanently deletes all stored embeddings** (old history cannot be retrieved). Use `restore: true` if you want to keep the index.
+### Selector tests
 
-**DeepThink (R1) token consumption**  
-DeepThink generates internal reasoning that is not copied to the final answer but still consumes context. The server multiplies the response length by `DEEPSEEK_DEEPTHINK_MULTIPLIER` (default 2.5) to estimate real usage.
+Validate every UI selector against the live DeepSeek interface. Run
+after any change to `src/browser/Selectors.ts` or after a suspected UI
+change. Do not require a running API server.
 
-**File uploads**  
-Supported types: PDF, images (PNG, JPG, JPEG), text files (TXT, MD, JSON, etc.), code files, office documents (DOC, DOCX, XLS, XLSX, PPT, PPTX).  
-Large files are split into chunks (size `RAG_CHUNK_SIZE`) for embedding.
+```bash
+npm run test:selectors
+```
 
-**Tool calling (function calling)**  
-The server passes `tools` to DeepSeek and returns `tool_calls` in the OpenAI format. It **does not execute** the tools – you must handle them on the client side.
+### API integration tests
 
-**Session recovery**  
-Session state is stored in `state.json`. If this file is lost or corrupted, you need to re‑register (`/v1/register`). Auto‑login via `.env` credentials can recover from scratch.
+Verify the HTTP contract: registration, chat completions, tool calling,
+file uploads (single, multiple, image, `file_id`), request validation
+(401 / 400), context status, temporary chat.
+
+**Requires a running server** on port 3000:
+
+```bash
+npm start                # terminal 1
+npm run test:api         # terminal 2
+```
+
+### Context-transfer tests
+
+Spawn their own server instance twice — once with `ENABLE_SNAPSHOT=true`,
+once with `ENABLE_RAG=true`. Fill a chat with marker files to cross the
+70% and 90% thresholds, force a real `handleOverflow`, and verify that a
+marker from the old chat survives in the new one. Also verify state
+persistence across restarts.
+
+**Requires port 3000 to be free** (the suite manages its own server):
+
+```bash
+pkill -f "node server.js"    # if a server is running
+npm run test:rag
+```
+
+### Port conflicts
+
+`test:api` needs the server running; `test:rag` needs the port free.
+Mixing them produces:
+
+```
+Error: listen EADDRINUSE: address already in use :::3000
+```
+
+```bash
+lsof -i :3000              # find the PID
+kill <PID>                 # or:
+pkill -f "node server.js"  # if it is a stray server
+```
+
+See [`tests/README.md`](tests/README.md) for the full troubleshooting
+guide.
 
 ---
 
-## Troubleshooting
+## Limitations
 
-| Problem | Likely solution |
-|---------|------------------|
-| `eada-cpu not available` warning | Ignore – linear search fallback works. |
-| RAG search returns no results | Ensure `ENABLE_RAG=true`, you have performed previous exchanges, and you are not in a fresh chat (`restore: false`). |
-| Long first response (30+ seconds) | Normal – the embedding model loads. |
-| Browser window pops up | First run; log in manually once – state is saved. |
-| Session not restored after restart | Check that `state.json` and `.api-key` exist and are valid. Delete them and re‑register if needed. |
-| Context overflow infinite loop | The server automatically handles it. If you see repeated transitions, lower `DEEPSEEK_MAX_CONTEXT_CHARS` temporarily for testing. |
+**Latency.** Each request takes **15–30 seconds** — Playwright drives a
+real browser. DeepThink requests take 60–120 seconds. This is an
+automation layer, not a replacement for a real API. Use it for batch
+work, structured long-form tasks, or scenarios where the free tier is
+worth the wait.
+
+**Browser automation fragility.** DeepSeek can change their UI at any
+time. The `selector-validator` catches this at startup — the server
+refuses to run if critical selectors are missing — but a UI change
+between restarts will surface as 500s until `Selectors.ts` is updated.
+Selector tests exist to make this cheap.
+
+**Estimated limits diverge from real ones.** The language coefficients
+are heuristic. Real overflows can happen earlier or later than the
+estimate suggests. The divergence is bounded and detectable (compare
+`chars_used / chars_limit` with `readable_percent` in a 409), but not
+eliminated.
+
+**`file_id` is single-use.** See [OpenAI compatibility](#openai-compatibility).
+Different from OpenAI semantics; deliberate.
+
+**No streaming.** Responses are returned whole.
+
+**Single tenant per process.** One API key, one browser, one chat at a
+time. Multiple concurrent sessions require multiple processes.
+
+**Server Busy → shutdown.** When DeepSeek returns the busy placeholder,
+the server exits after responding with 503. This is intentional: after
+that signal, retries fail for hours. A supervisor (systemd, pm2, Docker
+restart policy) should decide when to bring it back.
+
+**DeepThink consumes context invisibly.** The reasoning tokens are not
+in the final answer but do count toward the limit. The server applies a
+`DEEPSEEK_DEEPTHINK_MULTIPLIER` (default 2.5) to keep the estimate
+honest.
+
+---
+
+## Documentation
+
+Full documentation lives in [`docs/`](docs/index.md) and is built with
+MkDocs:
+
+```bash
+pip install mkdocs pymdown-extensions
+mkdocs serve -f docs/mkdocs.yml
+```
+
+Then open `http://127.0.0.1:8000`.
+
+Key sections:
+
+- **[Algorithms](docs/algorithms/index.md)** — contract descriptions of
+  every process. Each algorithm is fixed once and does not change without
+  a formal replacement. This is the reference for anyone modifying the
+  code.
+- **[Architecture](docs/architecture/overview.md)** — layers, data flow.
+- **[Webapp](docs/webapp/overview.md)** — the DeepSeek UI structure and
+  its dynamic states.
+- **[Selectors](docs/selectors/catalog.md)** — principles and full
+  catalog.
+- **[API](docs/api/endpoints.md)** — HTTP reference.
+- **[Guides](docs/guides/installation.md)** — installation, usage,
+  session management, testing, troubleshooting.
+
+Markdown files are readable directly in `docs/` without building.
 
 ---
 
 ## License
 
-MIT
+MIT.

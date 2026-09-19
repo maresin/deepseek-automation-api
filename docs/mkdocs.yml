@@ -1,0 +1,75 @@
+site_name: DeepSeek Automation API
+site_description: Документация по автоматизации DeepSeek
+site_author: Mikhail Maresin
+copyright: 2026
+
+# Конфиг лежит в docs/, а не в корне.
+# Запуск: mkdocs serve -f docs/mkdocs.yml
+docs_dir: .
+site_dir: ../site
+exclude_docs: |
+  mkdocs.yml
+
+theme:
+  name: readthedocs
+  highlightjs: true
+  hljs_languages:
+    - javascript
+    - typescript
+    - json
+    - bash
+    - yaml
+    - python
+
+nav:
+  - Главная: index.md
+  - Архитектура:
+      - Обзор: architecture/overview.md
+      - Слои: architecture/layers.md
+      - Поток данных: architecture/data-flow.md
+  - Алгоритмы:
+      - Оглавление: algorithms/index.md
+      - Управление сессией: algorithms/session.md
+      - Ожидание ответа: algorithms/response.md
+      - Управление контекстом: algorithms/context.md
+      - RAG: algorithms/rag.md
+      - Файлы: algorithms/files.md
+      - Очереди: algorithms/queues.md
+      - Ошибки: algorithms/errors.md
+  - Веб-приложение:
+      - Обзор: webapp/overview.md
+      - Динамические состояния: webapp/dynamic-states.md
+      - HTML-выжимки: webapp/ui-html-raw.md
+  - Селекторы:
+      - Принципы: selectors/principles.md
+      - Каталог: selectors/catalog.md
+  - API:
+      - Эндпоинты: api/endpoints.md
+      - Context Status: api/context-status.md
+  - Руководства:
+      - Установка: guides/installation.md
+      - Использование: guides/usage.md
+      - Управление сессией: guides/session-management.md
+      - Тестирование: guides/testing.md
+      - Диагностика: guides/troubleshooting.md
+  - Журнал изменений:
+      - Алгоритмы: changelog/algorithms-changelog.md
+      - Проект: changelog/project-changelog.md
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list          # ← НОВОЕ: включает синтаксис {#anchor}
+  - codehilite:
+      guess_lang: false
+  - toc:
+      permalink: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed
+  - pymdownx.details

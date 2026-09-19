@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "description": "Machine-readable catalog of DeepSeek UI selectors. Source of truth: src/browser/Selectors.ts",
+  "version": "1.0",
+  "date": "2026-09-18",
+  "priorities": {
+    "1": "data-* attributes",
+    "2": "role + aria state",
+    "3": "design system classes",
+    "4": "english text",
+    "5": "svg path prefixes"
+  },
+  "selectors": {
+    "auth": {
+      "emailInput": {
+        "selector": "input.ds-input__input[placeholder*=\"email\"]",
+        "priority": 3,
+        "description": "Email/phone field on /sign_in"
+      },
+      "passwordInput": {
+        "selector": "input.ds-input__input[placeholder*=\"Password\"]",
+        "priority": 3
+      },
+      "loginButton": {
+        "selector": ".ds-button--primary.ds-button--filled:has-text(\"Log in\")",
+        "priority": 4
+      },
+      "loginButtonFallback": {
+        "selector": ".ds-button--primary.ds-button--filled",
+        "priority": 3
+      },
+      "signInPage": {
+        "selector": "/sign_in",
+        "type": "url-substring"
+      }
+    },
+    "toggles": {
+      "deepThinkButton": {
+        "selector": ".ds-toggle-button:has-text(\"DeepThink\")",
+        "selectedClass": "ds-toggle-button--selected",
+        "priority": 3
+      },
+      "webSearchButton": {
+        "selector": ".ds-toggle-button:has-text(\"Search\")",
+        "selectedClass": "ds-toggle-button--selected",
+        "priority": 3,
+        "note": "Absent in Expert mode"
+      }
+    },
+    "input": {
+      "mainTextarea": {
+        "selector": "textarea[placeholder*=\"Message DeepSeek\"]:not([role=\"searchbox\"])",
+        "priority": 3
+      },
+      "sendButton": {
+        "selector": "[role=\"button\"].ds-button--circle:has(svg path[d^=\"M8.3125 0.98\"]):not(.ds-button--disabled)",
+        "priority": 2
+      },
+      "sendButtonExists": {
+        "selector": "[role=\"button\"].ds-button--circle:has(svg path[d^=\"M8.3125 0.98\"])",
+        "priority": 2
+      },
+      "attachButton": {
+        "selector": "[role=\"button\"]:has(svg path[d^=\"M5.5498 9.75V5\"])",
+        "priority": 5
+      },
+      "fileInput": {
+        "selector": "input[type=\"file\"]",
+        "priority": 1
+      }
+    },
+    "generation": {
+      "stopButton": {
+        "selector": "[role=\"button\"].ds-button--circle:has(svg path[d^=\"M2 4.88\"])",
+        "priority": 5
+      },
+      "continueButton": {
+        "selector": "[role=\"button\"]:has-text(\"Continue\")",
+        "priority": 4
+      },
+      "scrollToBottomButton": {
+        "selector": "[role=\"button\"].ds-button--floating:has(svg path[d^=\"M11.8486 5.5\"])",
+        "priority": 3
+      }
+    },
+    "sidebar": {
+      "newChatButtonIcon": {
+        "selector": "[role=\"button\"]:has(svg path[d^=\"M8 0.599609\"])",
+        "priority": 5,
+        "note": "Only when sidebar is collapsed"
+      },
+      "sidebarToggle": {
+        "selector": "[role=\"button\"]:has(svg path[d^=\"M9.67272 0.522841\"])",
+        "priority": 5
+      },
+      "chatContextMenu": {
+        "selector": "a[href^=\"/a/chat/s/\"] [role=\"button\"]:has(svg path[d^=\"M4.55146 8.00001\"])",
+        "priority": 2
+      },
+      "chatHistoryLink": {
+        "selector": "a[href^=\"/a/chat/s/\"]",
+        "priority": 1
+      }
+    },
+    "settings": {
+      "settingsMenuItem": {
+        "selector": ".ds-dropdown-menu-option:has(.ds-dropdown-menu-option__label:has-text(\"Settings\"))",
+        "priority": 3
+      },
+      "settingsClose": {
+        "selector": ".ds-modal-content__close",
+        "priority": 3
+      },
+      "settingsTabGeneral": {
+        "selector": "[role=\"button\"]:has-text(\"General\")",
+        "priority": 4
+      },
+      "languageSelect": {
+        "selector": ".ds-select",
+        "priority": 3
+      },
+      "languageOptionEnglish": {
+        "selector": ".ds-select-option:has(span:has-text(\"English\")):not(:has(span:has-text(\"(\")))",
+        "priority": 3
+      }
+    },
+    "messages": {
+      "virtualListItem": {
+        "selector": "[data-virtual-list-item-key]",
+        "priority": 1
+      },
+      "markdownBodyRelative": {
+        "selector": ".ds-markdown",
+        "priority": 3,
+        "note": "Resolved relative to a message block, not used standalone"
+      },
+      "fileBadge": {
+        "selector": "div:has(svg path[d^=\"M10.6074 4.40278\"])",
+        "priority": 5
+      }
+    },
+    "loading": {
+      "loadingIndicator": {
+        "selector": ".ds-loading",
+        "priority": 3
+      }
+    }
+  },
+  "svgPathPrefixes": {
+    "stopButtonPathPrefix": "M2 4.88",
+    "sendButtonPathPrefix": "M8.3125 0.98",
+    "regenerateButtonPathPrefix": "M7.92136 0.349152",
+    "copyButtonPathPrefix": "M6.14929 4.02032",
+    "downloadButtonPathPrefix": "M15.3695 11.411",
+    "retryButtonPathPrefix": "M9.94076 1.34942"
+  },
+  "textConstants": {
+    "continueButtonText": "Continue",
+    "lengthLimitBannerPattern": "Length limit reached[^\\n]*",
+    "serverBusyText": "Server busy, please try again later."
+  },
+  "criticalSelectors": [
+    "emailInput",
+    "passwordInput",
+    "loginButton",
+    "mainTextarea",
+    "sendButtonExists",
+    "attachButton",
+    "deepThinkButton",
+    "webSearchButton",
+    "sidebarToggle"
+  ],
+  "optionalSelectors": [
+    "newChatButtonIcon"
+  ]
+}

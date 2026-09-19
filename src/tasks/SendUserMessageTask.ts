@@ -1,13 +1,30 @@
-import path from 'path';
-import fs from 'fs';
+// src/tasks/SendUserMessageTask.ts
+/**
+ * @file src/tasks/SendUserMessageTask.ts
+ * Task for sending a user message with optional file attachments.
+ * Handles context transitions, RAG search, and session state persistence.
+ *
+ * RAG indexing of attached files is not done here — the files are
+ * uploaded to the DeepSeek UI for the current message, and chat.js
+ * enqueues them into the background IndexingQueue once the chatId is
+ * known. This keeps the request-response cycle short even for large
+ * files, whose embedding can take minutes.
+ */
+
 import { Task } from '../task/Task.js';
 import { DeepSeekClient } from '../DeepSeekClient.js';
-import { NeedTransitionError } from '../file/FileUploader.js';
+import { ContextExhaustedError } from '../types.js';
 
 export class SendUserMessageTask extends Task<string> {
+    /**
+     * @param text      - Full prompt to send (includes history/tools if any).
+     * @param filePaths - Optional array of file paths.
+     * @param userText  - Clean user text (used for language detection and RAG search).
+     */
     constructor(
         private text: string,
-        private filePaths?: string[]
+        private filePaths?: string[],
+        private userText?: string
     ) {
         const desc = filePaths && filePaths.length
             ? `Send message with ${filePaths.length} file(s)`
@@ -16,126 +33,129 @@ export class SendUserMessageTask extends Task<string> {
         this.maxRetries = 0;
     }
 
-    private getFileSizeInChars(filePath: string): number {
-        try {
-            const content = fs.readFileSync(filePath, 'utf-8');
-            return content.length;
-        } catch {
-            const stats = fs.statSync(filePath);
-            return stats.size;
+    /**
+     * Send the tools system prompt once per session, if tools were provided.
+     */
+    private async ensureToolsPrompt(client: DeepSeekClient, tools: any[]): Promise<void> {
+        if (!tools || tools.length === 0) return;
+        if (client.isSystemPromptSent('tools')) {
+            console.log('ℹ️ Tools prompt already sent in this session');
+            return;
         }
+
+        console.log('🔧 Sending tools system prompt...');
+        const toolsPrompt = `This is a permanent instruction for the entire session.
+You are an assistant that can use tools. Tools will be provided in subsequent messages.
+When tools are provided, respond with ONLY JSON:
+{"tool_calls": [{"name": "tool_name", "arguments": {"param": "value"}}]}
+When you don't need tools, respond normally.
+Respond in the same language as the user.
+Reply ONLY with "OK" to confirm you understand.`;
+
+        const response = await client.executePipeline({ text: toolsPrompt, skipStatsUpdate: true });
+        if (!response || !response.toUpperCase().includes('OK')) {
+            console.warn(`⚠️ Expected "OK" from tools prompt, got: ${(response || '').substring(0, 100)}`);
+        }
+        client.setSystemPromptSent('tools');
+        console.log('✅ Tools prompt sent');
     }
 
-    private async indexFileIfNeeded(client: DeepSeekClient, filePath: string): Promise<void> {
-        if (!filePath || process.env.ENABLE_RAG !== 'true') return;
-        const apiKey = (global as any).currentApiKey;
-        if (!apiKey) return;
-        try {
-            const { getHistoryStore } = require('../../dist/rag/init.js');
-            const store = await getHistoryStore(apiKey);
-            const fileContent = fs.readFileSync(filePath, 'utf-8');
-            const chunkSize = parseInt(process.env.RAG_CHUNK_SIZE || '2000', 10);
-            const chunks: string[] = [];
-            for (let i = 0; i < fileContent.length; i += chunkSize) {
-                chunks.push(fileContent.slice(i, i + chunkSize));
-            }
-            for (let i = 0; i < chunks.length; i++) {
-                await store.addFileChunk(client.currentChatId, path.basename(filePath), i, chunks[i]);
-            }
-            console.log(`📎 Indexed ${chunks.length} chunks from file ${path.basename(filePath)} for chat ${client.currentChatId}`);
-        } catch (err) {
-            console.error('Failed to index file chunks:', err);
+    /**
+     * Send the multi-role system prompt once per session, if the conversation
+     * contains more than one role or more than one message.
+     */
+    private async ensureMultiRolePrompt(client: DeepSeekClient, messages: any[]): Promise<void> {
+        const hasSystem = messages.some(m => m.role === 'system');
+        const hasMultipleUsers = messages.filter(m => m.role === 'user').length > 1;
+        const hasAssistant = messages.some(m => m.role === 'assistant');
+
+        if (!hasSystem && !hasMultipleUsers && !hasAssistant) return;
+        if (client.isSystemPromptSent('multiRole')) {
+            console.log('ℹ️ Multi-role prompt already sent in this session');
+            return;
         }
+
+        console.log('💬 Sending multi-role system prompt...');
+        const multiRolePrompt = `This is a permanent instruction for the entire session.
+You are participating in a multi-turn conversation.
+Messages are prefixed with 'System:', 'User:' or 'Assistant:'.
+Maintain context and respond appropriately to each role.
+Reply ONLY with "OK" to confirm you understand.`;
+
+        const response = await client.executePipeline({ text: multiRolePrompt, skipStatsUpdate: true });
+        if (!response || !response.toUpperCase().includes('OK')) {
+            console.warn(`⚠️ Expected "OK" from multi-role prompt, got: ${(response || '').substring(0, 100)}`);
+        }
+        client.setSystemPromptSent('multiRole');
+        console.log('✅ Multi-role prompt sent');
     }
 
+    /**
+     * Main execution.
+     *
+     * Order of operations:
+     *   1. Analyze user text for language detection.
+     *   2. If a context transition is pending, perform it first.
+     *   3. Send the system prompts required by this request (once per session).
+     *   4. Attach files to the DeepSeek UI.
+     *   5. Send the message and wait for the response.
+     *   6. Detect the length-limit banner and convert it into a 409 signal.
+     *   7. Update the assigned chat ID and persist session state.
+     *
+     * File indexing for RAG is NOT done here. chat.js enqueues the files
+     * into the background IndexingQueue after this task completes, using
+     * the chatId assigned by DeepSeek.
+     */
     async execute(client: DeepSeekClient): Promise<string> {
-        // 1. Индексация всех файлов
-        if (this.filePaths && this.filePaths.length) {
-            for (const fp of this.filePaths) {
-                await this.indexFileIfNeeded(client, fp);
-            }
+        if (this.userText) {
+            client.contextManager.analyzeUserMessage(this.userText);
         }
 
-        // 2. Отложенный переход
         if (client.needTransition) {
-            console.log('🚦 needTransition flag set, performing transition...');
-            await this.performTransition(client);
-            client.needTransition = false;
+            console.log('🚦 needTransition flag set, calling handleOverflow...');
+            await client.handleOverflow();
+            await client.saveChatState();
         }
 
-        // 3. Системный промпт
-        if (!client.isSystemPromptSent() && client.getSystemPromptText()) {
-            console.log('📌 Sending system prompt before user message...');
-            const systemPromptText = client.getSystemPromptText()!;
-            await client.executePipeline({ text: systemPromptText, skipStatsUpdate: true });
-            client.setSystemPromptSent(true);
-            console.log('✅ System prompt sent and confirmed');
-        }
+        const tools = (global as any).currentTools || [];
+        const messages = (global as any).currentMessages || [];
 
-        // 4. Проверка контекста (учитываем все файлы)
-        let requiredChars = this.text.length;
+        await this.ensureToolsPrompt(client, tools);
+        await this.ensureMultiRolePrompt(client, messages);
+
         if (this.filePaths && this.filePaths.length) {
-            for (const fp of this.filePaths) {
-                requiredChars += this.getFileSizeInChars(fp);
-            }
-        }
-        const stats = await client.contextManager.getStats();
-        const wouldBePercent = ((stats.totalChars + requiredChars) / stats.maxChars) * 100;
-
-        if (wouldBePercent > 90) {
-            console.log(`📊 Would be ${wouldBePercent.toFixed(1)}% after adding message. Initiating transition.`);
-            if (wouldBePercent <= 95 && client.contextManager.canCreateTransitionSnapshot(requiredChars)) {
-                console.log('📸 Creating transition snapshot (90-95%)...');
-                await client.contextManager.createTransitionSnapshot();
-            } else {
-                console.log('⚠️ Would exceed 95% – skipping snapshot creation, using existing snapshot.');
-            }
-            await this.performTransition(client);
-            return await this.execute(client);
+            await client.fileUploader.upload(this.filePaths);
+            await client.page!.waitForTimeout(500);
         }
 
-        // 5. Прикрепляем файлы один за другим
-        if (this.filePaths && this.filePaths.length) {
-            for (const fp of this.filePaths) {
-                await client.fileUploader.upload(fp);
-                await client.page!.waitForTimeout(500); // небольшая пауза между файлами
-            }
+        let messageText = this.text;
+        if (!messageText && this.filePaths && this.filePaths.length) {
+            messageText = 'Please analyze the uploaded file(s).';
         }
 
-        // 6. Отправка текстового сообщения (файлы уже прикреплены)
+        client.lastLengthLimit = { detected: false, percent: null };
         const response = await client.executePipeline({
-            text: this.text,
-            filePath: undefined, // не передаём файл, т.к. уже прикрепили
-            skipStatsUpdate: false
+            text: messageText,
+            filePath: undefined,
+            skipStatsUpdate: false,
         });
+
+        if (client.lastLengthLimit.detected) {
+            console.warn(`⚠️ Length limit detected: ${client.lastLengthLimit.percent ?? 'no answer'}`);
+            client.needTransition = false;
+            client.lastLengthLimit = { detected: false, percent: null };
+            throw new ContextExhaustedError('Length limit reached', response || '');
+        }
+
+        const newChatId = await client.chatController.getCurrentChatId();
+        if (newChatId && newChatId !== client.currentChatId) {
+            console.log(`📌 Chat ID assigned: ${newChatId}`);
+            client.currentChatId = newChatId;
+        }
+
         client.setChatStarted(true);
+        await client.saveChatState();
+
         return response;
-    }
-
-    private async performTransition(client: DeepSeekClient): Promise<void> {
-        console.log('🔄 Starting transition to new chat due to context limit...');
-        const latestSnapshot = client.contextManager.getLatestSnapshotPath();
-        if (!latestSnapshot) {
-            throw new Error('No snapshot available for transition');
-        }
-
-        await client.chatController.newChat();
-        client.currentChatId = Date.now().toString();
-        console.log(`🆕 New chat created with ID: ${client.currentChatId} (after transition)`);
-        client.setChatStarted(false);
-        client.setSystemPromptSent(false);
-        await client.contextManager.resetContext();
-
-        const uploadPromptPath = path.join(process.cwd(), 'prompts', 'snapshot_upload_prompt.txt');
-        let uploadPrompt = "Here is the context snapshot of our previous session (attached file). Please accept it and confirm by replying 'OK'.";
-        if (fs.existsSync(uploadPromptPath)) {
-            uploadPrompt = fs.readFileSync(uploadPromptPath, 'utf-8');
-        }
-        console.log('📤 Uploading snapshot file...');
-        await client.executePipeline({ text: uploadPrompt, filePath: latestSnapshot, skipStatsUpdate: false });
-
-        client.inRefreshedChat = true;
-        client.needTransition = false;
-        console.log('✅ Transition completed, RAG search will be active with new chat ID');
     }
 }

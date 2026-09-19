@@ -1,20 +1,43 @@
 // server-modules/routes/register.js
-const { getApiKey, saveApiKey, generateApiKey, deleteSessionFiles, bothFilesExist, getSystemPrompt } = require('../utils');
+/**
+ * @file server-modules/routes/register.js
+ * Registration route: creates a new session, initializes DeepSeekClient,
+ * stores the generated API key, and (when RAG is enabled) clears the
+ * session's RAG index so it starts empty.
+ *
+ * Response shape:
+ *   { api_key: string, message: string }
+ */
+
+const {
+    getApiKey,
+    saveApiKey,
+    generateApiKey,
+    deleteSessionFiles,
+    bothFilesExist,
+    getSystemPrompt,
+} = require('../utils');
 const { setClientAndScheduler, isReady } = require('../state');
 const { DeepSeekClient } = require('../../dist');
 const { getClientConfig } = require('../clientConfig');
 
 module.exports = async function registerRoute(req, res) {
     const { email, password } = req.body;
+
     if (isReady() && bothFilesExist()) {
         return res.json({ api_key: getApiKey(), message: 'Session already exists' });
     }
+
     if (!bothFilesExist()) deleteSessionFiles();
 
     const apiKey = generateApiKey();
     const systemPrompt = getSystemPrompt();
     const config = getClientConfig({ email, password, systemPrompt });
     const newClient = new DeepSeekClient(config);
+
+    // Assign the api key before initialize() so that startFresh() can clear
+    // the correct RAG index for this session.
+    newClient.apiKey = apiKey;
 
     await newClient.initialize();
 
