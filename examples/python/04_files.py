@@ -1,287 +1,173 @@
-#!/usr/bin/env python3
 """
 04 — File uploads.
 
-Covers:
-  - POST /v1/files                            → upload, get file_id
-  - POST /v1/chat/completions (JSON)          → use file_id in messages
-  - POST /v1/chat/completions (multipart)     → attach file(s) directly
-  - Mixed content                             → text + file in one message
-
 Two ways to attach a file:
 
-  A. Upload first via /v1/files, then reference file_id inside a
-     normal JSON request. Useful when the same file needs to be sent
-     from a client that already has it uploaded.
+  A. Multipart form — attach the file directly to the chat request.
+     No prior upload. Simplest path.
 
-  B. Attach directly with multipart/form-data to /v1/chat/completions.
-     The server receives and forwards the file to DeepSeek UI without
-     a prior /v1/files round-trip.
+  B. Two-phase — upload via POST /v1/files, get a file_id, then
+     reference it inside the messages content array. Mirrors the
+     OpenAI Assistants flow.
 
-IMPORTANT — file_id is single-use in this implementation.
-After a chat request that references a file_id, the file is deleted
-from disk (or, if ENABLE_RAG=true, handed to the background indexing
-queue and deleted later). The next request with the same file_id will
-return 400 "File not found for file_id". To reuse, upload again.
+    pip install requests
+    python 04_files.py
 
-Supported extensions: PDF, DOC(X), XLS(X), PPT(X), images (PNG, JPG,
-JPEG, GIF, WEBP, ...), plain text (TXT, MD, CSV, LOG), source code,
-JSON, YAML, HTML, CSS. See DEEPSEEK_SUPPORTED_EXTENSIONS in
-src/utils/fileUtils.ts.
+IMPORTANT — file_id is single-use in this implementation. After the
+request that references it, the file is deleted from disk (or handed
+to the RAG indexing queue and deleted later). The next request with
+the same file_id returns 400. To reuse, upload again.
 
-Limits: 100 MB per file, 50 files per request.
+Supported extensions: PDF, DOC(X), XLS(X), PPT(X), images, plain text,
+source code, JSON, YAML, HTML, CSS. Limits: 100 MB per file, 50 files
+per request.
 """
 
 import json
-import os
-import shutil
-import sys
-from pathlib import Path
 
 import requests
 
-from common import (
-    BASE_URL, banner, section,
-    load_or_register_key, print_response,
-)
+BASE_URL = "http://localhost:3000"
+API_KEY = "deepseek_..."  # replace
 
 
-TEST_DIR = Path(__file__).parent / "test_files"
+# ─────────────────────────────────────────────────────────────────────
+# Prepare test files
+# ─────────────────────────────────────────────────────────────────────
 
-
-# ---------------------------------------------------------------------
-# Test files
-# ---------------------------------------------------------------------
-
-def prepare_test_files() -> None:
-    """Create a few small text files for the examples."""
-    if TEST_DIR.exists():
-        shutil.rmtree(TEST_DIR)
-    TEST_DIR.mkdir()
-
-    (TEST_DIR / "notes.txt").write_text(
+with open("/tmp/notes.txt", "w") as f:
+    f.write(
         "Project notes\n"
         "-------------\n"
         "Goal: automate DeepSeek Web via Playwright.\n"
-        "Status: selectors verified, context management done.\n"
-        "Next: finalize documentation.\n"
+        "Marker: NOTES42.\n"
     )
 
-    (TEST_DIR / "requirements.md").write_text(
-        "# Requirements\n\n"
-        "- Python 3.8+\n"
-        "- requests\n"
-        "- Server running at localhost:3000\n"
-    )
-
-    (TEST_DIR / "questions.txt").write_text(
-        "1. When will the next release be?\n"
-        "2. What are the open issues?\n"
-        "3. Who is the maintainer?\n"
-    )
+with open("/tmp/second.txt", "w") as f:
+    f.write("Second file. Marker: SECOND99.\n")
 
 
-def cleanup_test_files() -> None:
-    if TEST_DIR.exists():
-        shutil.rmtree(TEST_DIR)
+# ─────────────────────────────────────────────────────────────────────
+# 1. Multipart — single file, no prior upload
+# ─────────────────────────────────────────────────────────────────────
+#
+# Send the file directly in the chat request using multipart/form-data.
+# The file goes into the `files` field; the JSON payload goes into
+# the `data` field.
+#
+# The server forwards the file to DeepSeek's UI. No file_id involved.
 
-
-# ---------------------------------------------------------------------
-# Upload
-# ---------------------------------------------------------------------
-
-def upload_file(api_key: str, file_path: Path) -> dict:
-    """
-    POST /v1/files — OpenAI-compatible upload.
-
-    Returns an OpenAI file object:
-        { id, object: "file", bytes, created_at, filename, purpose }
-    The `id` can be used as file_id in messages.
-    """
-    with open(file_path, "rb") as f:
-        r = requests.post(
-            f"{BASE_URL}/v1/files",
-            headers={"Authorization": f"Bearer {api_key}"},
-            files={"file": (file_path.name, f)},
-            timeout=60,
-        )
-
-    if r.status_code != 200:
-        print(f"✗ Upload failed: HTTP {r.status_code}: {r.text}", file=sys.stderr)
-        sys.exit(1)
-
-    return r.json()
-
-
-# ---------------------------------------------------------------------
-# Multipart chat
-# ---------------------------------------------------------------------
-
-def send_chat_multipart(api_key: str, messages: list, file_paths: list) -> dict:
-    """
-    POST /v1/chat/completions with multipart/form-data.
-
-    The server accepts two field names:
-        file=<binary>    maxCount=1
-        files=<binary>   maxCount=50
-    They can be mixed. This helper uses `files` for everything.
-
-    The JSON payload goes into the `data` field.
-    """
-    handles = [open(p, "rb") for p in file_paths]
-    try:
-        files_param = [
-            ("files", (p.name, fh, "application/octet-stream"))
-            for p, fh in zip(file_paths, handles)
-        ]
-        data_param = {"data": json.dumps({"messages": messages})}
-
-        r = requests.post(
-            f"{BASE_URL}/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            files=files_param,
-            data=data_param,
-            timeout=180,
-        )
-    finally:
-        for fh in handles:
-            fh.close()
-
-    if r.status_code != 200:
-        print(f"✗ HTTP {r.status_code}: {r.text}", file=sys.stderr)
-        sys.exit(1)
-
-    return r.json()
-
-
-# ---------------------------------------------------------------------
-# 1. Upload via /v1/files and use file_id
-# ---------------------------------------------------------------------
-
-def example_file_id(api_key: str) -> None:
-    section("Example 1: upload via /v1/files, use file_id")
-
-    upload_path = TEST_DIR / "notes.txt"
-    file_obj = upload_file(api_key, upload_path)
-    file_id = file_obj["id"]
-    print(f"✓ Uploaded: {file_obj['filename']} ({file_obj['bytes']} bytes)")
-    print(f"  file_id: {file_id}")
-
-    # Reference via content array
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": "Summarize this in one sentence."},
-            {"type": "file", "file": {"file_id": file_id}},
-        ],
-    }]
-    data = send_chat_json(api_key, messages)
-    print_response(data)
-
-
-# ---------------------------------------------------------------------
-# 2. Multipart, single file
-# ---------------------------------------------------------------------
-
-def example_multipart_single(api_key: str) -> None:
-    section("Example 2: multipart, single file")
-
-    messages = [{
-        "role": "user",
-        "content": "What are the three questions in the attached file?",
-    }]
-    data = send_chat_multipart(api_key, messages, [TEST_DIR / "questions.txt"])
-    print_response(data)
-
-
-# ---------------------------------------------------------------------
-# 3. Multipart, multiple files
-# ---------------------------------------------------------------------
-
-def example_multipart_multiple(api_key: str) -> None:
-    section("Example 3: multipart, multiple files")
-
-    messages = [{
-        "role": "user",
-        "content": "Compare these files and list what they have in common.",
-    }]
-    paths = [
-        TEST_DIR / "notes.txt",
-        TEST_DIR / "requirements.md",
-        TEST_DIR / "questions.txt",
-    ]
-    data = send_chat_multipart(api_key, messages, paths)
-    print_response(data)
-
-
-# ---------------------------------------------------------------------
-# 4. Mixed: text + file_id in the same message
-# ---------------------------------------------------------------------
-
-def example_mixed(api_key: str) -> None:
-    section("Example 4: mixed content (text + file_id)")
-
-    upload_path = TEST_DIR / "requirements.md"
-    file_obj = upload_file(api_key, upload_path)
-    file_id = file_obj["id"]
-    print(f"✓ Uploaded: {file_obj['filename']}  file_id: {file_id}")
-
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": "Look at the requirements. What Python version is needed?"},
-            {"type": "file", "file": {"file_id": file_id}},
-        ],
-    }]
-    data = send_chat_json(api_key, messages)
-    print_response(data)
-
-
-# ---------------------------------------------------------------------
-# Helper: JSON (non-multipart) request — same as in common.send_chat
-# ---------------------------------------------------------------------
-
-def send_chat_json(api_key: str, messages: list) -> dict:
-    """
-    POST /v1/chat/completions with JSON body.
-
-    Duplicates common.send_chat's core, but is defined here so that this
-    file does not depend on the JSON-only helper's payload shape.
-    """
+with open("/tmp/notes.txt", "rb") as f:
     r = requests.post(
         f"{BASE_URL}/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        files={"files": ("notes.txt", f, "application/octet-stream")},
+        data={
+            "data": json.dumps({
+                "messages": [{
+                    "role": "user",
+                    "content": "What is the marker in this file?"
+                }]
+            })
         },
-        json={"messages": messages},
         timeout=180,
     )
-    if r.status_code != 200:
-        print(f"✗ HTTP {r.status_code}: {r.text}", file=sys.stderr)
-        sys.exit(1)
-    return r.json()
+
+print(r.json()["choices"][0]["message"]["content"])
+# → The marker is NOTES42.
 
 
-# ---------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────
+# 2. Multipart — multiple files (up to 50)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Repeat the `files` field for each file. Order is preserved.
+# The server validates each file's extension and size individually.
 
-def main() -> None:
-    banner("04 — File uploads")
-    prepare_test_files()
+files = [
+    ("files", ("notes.txt", open("/tmp/notes.txt", "rb"), "application/octet-stream")),
+    ("files", ("second.txt", open("/tmp/second.txt", "rb"), "application/octet-stream")),
+]
 
-    try:
-        api_key = load_or_register_key()
-        example_file_id(api_key)
-        example_multipart_single(api_key)
-        example_multipart_multiple(api_key)
-        example_mixed(api_key)
-    finally:
-        cleanup_test_files()
+r = requests.post(
+    f"{BASE_URL}/v1/chat/completions",
+    headers={"Authorization": f"Bearer {API_KEY}"},
+    files=files,
+    data={
+        "data": json.dumps({
+            "messages": [{
+                "role": "user",
+                "content": "List the markers from both files."
+            }]
+        })
+    },
+    timeout=180,
+)
 
-    banner("Done.")
+for _, (_, fh, _) in files:
+    fh.close()
+
+print(r.json()["choices"][0]["message"]["content"])
+# → NOTES42 and SECOND99.
 
 
-if __name__ == "__main__":
-    main()
+# ─────────────────────────────────────────────────────────────────────
+# 3. Two-phase — upload first, get a file_id
+# ─────────────────────────────────────────────────────────────────────
+#
+# OpenAI-compatible endpoint. Returns a file object:
+#
+#   {
+#     "id": "file_1789891863600_abc12345",
+#     "object": "file",
+#     "bytes": 68,
+#     "created_at": 1789891863,
+#     "filename": "notes.txt",
+#     "purpose": "assistants"
+#   }
+#
+# The `id` can be referenced later inside a message's content array.
+
+with open("/tmp/notes.txt", "rb") as f:
+    upload = requests.post(
+        f"{BASE_URL}/v1/files",
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        files={"file": ("notes.txt", f)},
+        timeout=60,
+    )
+
+file_obj = upload.json()
+print(file_obj)
+FILE_ID = file_obj["id"]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 4. Use file_id in a JSON chat request
+# ─────────────────────────────────────────────────────────────────────
+#
+# Reference the file via the content array — same shape as OpenAI.
+# A message can mix text and file parts in any order.
+
+r = requests.post(
+    f"{BASE_URL}/v1/chat/completions",
+    headers={
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json",
+    },
+    json={
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is the marker in this file?"},
+                {"type": "file", "file": {"file_id": FILE_ID}}
+            ]
+        }]
+    },
+    timeout=180,
+)
+
+print(r.json()["choices"][0]["message"]["content"])
+
+# After this request, the file_id is dead. Reusing it returns:
+#   400 {"error": "File not found for file_id: file_..."}
+# To attach the same file again, upload it again.

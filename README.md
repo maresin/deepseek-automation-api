@@ -432,31 +432,33 @@ Full design notes: [`docs/algorithms/rag.md`](docs/algorithms/rag.md).
 ## Examples
 
 The [`examples/`](examples/README.md) directory contains a complete
-walkthrough of the API in three languages:
+walkthrough of the API in three languages. Two kinds of examples:
+
+- **Runnable** — Python and JavaScript. Each file runs end-to-end:
+  register, chat, print the answer. Edit `API_KEY` at the top, run
+  the file, read the output.
+- **Reference** — cURL. Each `.sh` file is a sequence of complete
+  `curl` commands. Copy a command, paste it into a terminal, run it.
+
+Both styles show the same HTTP contract. Choose the one that matches
+how you will consume the API.
 
 | File | Covers |
 |---|---|
-| `01_getting_started` | Register, health, one message |
-| `02_conversation` | system + user, multi-turn, tool calling |
-| `03_features` | DeepThink, Web Search, both |
-| `04_files` | `file_id`, multipart single / multiple, mixed content |
+| `01_getting_started` | Register, health, single user message |
+| `02_conversation` | `system` + `user`, multi-turn, tool calling |
+| `03_features` | `extra_body.deepthink`, `extra_body.web_search`, both |
+| `04_files` | Multipart `files`, two-phase `file_id`, mixed content |
 | `05_session` | Context monitoring, 409 / 503 / 401 / 504, transitions, degradation |
 
-Each language also ships a `common.{py,js,sh}` helper with `send_chat`,
-`print_response`, `print_context_status`. No third-party SDKs — the
-examples show the raw HTTP contract, so `context_status` and precise
-error codes stay visible.
+No shared helper modules. Each file is self-contained. No third-party
+SDKs — the examples show the raw HTTP contract, so `context_status`
+and precise error codes stay visible.
 
-Two utility scripts are included:
-
-```bash
-# Static syntax check (no server required)
-./examples/lint.sh
-
-# Smoke-run 01_getting_started in all three languages
-# (requires a running server)
-./examples/smoke.sh
-```
+**Read `05_session` before building a client.** The first four examples
+are optimistic; `05` shows the full client-side protocol, including
+what to do when a chat transitions and quality drops. Full discussion:
+[`docs/guides/session-management.md`](docs/guides/session-management.md).
 
 ---
 

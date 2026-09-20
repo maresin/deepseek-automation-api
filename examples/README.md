@@ -4,6 +4,18 @@ Practical examples for the DeepSeek Automation API — covering every
 endpoint, every request variant, and full error handling, in three
 languages.
 
+## Two kinds of examples
+
+- **Runnable** — Python and JavaScript. Each file runs end-to-end:
+  register, chat, print the answer. Edit `API_KEY` at the top, run the
+  file, read the output.
+- **Reference** — cURL. Each `.sh` file is a sequence of complete
+  `curl` commands. Copy a command, paste it into a terminal, run it.
+  The files are not meant to be executed as a whole.
+
+Both styles show the same HTTP contract. Choose the one that matches
+how you will consume the API.
+
 ## Prerequisites
 
 - **Running server.** See [installation](../docs/guides/installation.md).
@@ -11,84 +23,111 @@ languages.
   npm start
   ```
 
-- **Python:** Python 3.8+, `requests`
+- **Python:** 3.8+, `requests`
   ```bash
   pip install requests
   ```
 
-- **JavaScript:** Node.js 18+ (uses native `fetch`, `FormData`, `Blob`)
+- **JavaScript:** Node.js 18+ (native `fetch`, `FormData`, `Blob`,
+  top-level `await`)
 
-- **cURL:** `bash`, `curl`, `jq`
+- **cURL:** `bash`, `curl`, optionally `jq` for pretty output
 
 The server URL can be overridden via `DEEPSEEK_BASE_URL` (default:
 `http://localhost:3000`).
 
 ## Quick start
 
-The first example registers a session and saves the API key to
-`.examples-api-key` in the current directory. All subsequent examples
-reuse that key.
+### 1. Get an API key
 
 ```bash
-# Python
-cd examples/python
-python 01_getting_started.py
-python 02_conversation.py
-python 03_features.py
-python 04_files.py
-python 05_session.py
-
-# JavaScript
-cd examples/javascript
-node 01_getting_started.js
-node 02_conversation.js
-node 03_features.js
-node 04_files.js
-node 05_session.js
-
-# cURL
-cd examples/curl
-./01_getting_started.sh
-./02_conversation.sh
-./03_features.sh
-./04_files.sh
-./05_session.sh
+curl -X POST http://localhost:3000/v1/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"your@email.com","password":"your_password"}'
 ```
 
-> **Warning.** Registration creates a session on the server side and
-> overwrites `.api-key`. If you already have a running session you care
-> about, back up `.api-key` first.
+Response:
+
+```json
+{
+  "api_key": "deepseek_1789662945767_s8un7bvjft",
+  "message": "Store this API key securely."
+}
+```
+
+### 2. Run a Python example
+
+```bash
+cd examples/python
+# Open 01_getting_started.py, replace API_KEY = "deepseek_..." with your key
+python 01_getting_started.py
+```
+
+### 3. Run a JavaScript example
+
+```bash
+cd examples/javascript
+# Open 01_getting_started.js, replace API_KEY = 'deepseek_...' with your key
+node 01_getting_started.js
+```
+
+### 4. Read a cURL example
+
+```bash
+export API_KEY=deepseek_1789662945767_s8un7bvjft
+cat examples/curl/01_getting_started.sh
+# Copy-paste individual curl commands into your terminal
+```
 
 ## Files
 
 | File | Covers |
 |---|---|
-| `01_getting_started` | `GET /health`, `POST /v1/register`, basic `POST /v1/chat/completions` |
-| `02_conversation` | `system` + `user`, multi-turn, tool calling (function calling) |
-| `03_features` | `extra_body.deepthink`, `extra_body.web_search`, both at once |
-| `04_files` | `POST /v1/files`, `file_id` in messages, multipart `file` / `files`, mixed content |
-| `05_session` | `POST /v1/chat/new`, `GET /v1/context/status`, `POST /v1/chat/single`, error handling (409 / 503 / 401 / 504) |
+| `01_getting_started` | Register, health, single user message |
+| `02_conversation` | `system` + `user`, multi-turn, tool calling |
+| `03_features` | `extra_body.deepthink`, `extra_body.web_search`, both |
+| `04_files` | Multipart `files`, two-phase `file_id`, mixed content |
+| `05_session` | Context monitoring, 409 / 503 / 401 / 504, transitions, degradation |
 
-Each directory also contains a `common.*` helper module:
+Every example exists in three languages:
 
-| Directory | Helper | Provides |
-|---|---|---|
-| `python/` | `common.py` | `load_or_register_key`, `send_chat`, `print_response`, `print_context_status`, `banner`, `section` |
-| `javascript/` | `common.js` | Same, ES modules |
-| `curl/` | `common.sh` | `load_or_register_key`, `send_chat`, `print_response`, `print_context_status`, `banner`, `section` |
+```
+examples/
+├── python/
+│   ├── 01_getting_started.py
+│   ├── 02_conversation.py
+│   ├── 03_features.py
+│   ├── 04_files.py
+│   └── 05_session.py
+├── javascript/
+│   ├── 01_getting_started.js
+│   ├── 02_conversation.js
+│   ├── 03_features.js
+│   ├── 04_files.js
+│   └── 05_session.js
+└── curl/
+    ├── 01_getting_started.sh
+    ├── 02_conversation.sh
+    ├── 03_features.sh
+    ├── 04_files.sh
+    └── 05_session.sh
+```
+
+No shared helper modules. Each file is self-contained.
 
 ## Important: read 05 before building a client
 
-The first four examples are **optimistic**. They assume the session never
-overflows and the network is reliable. Real usage is different.
+The first four examples are **optimistic**. They assume the session
+never overflows and the network is reliable. Real usage is different.
 
 When a chat reaches the context limit, the server transitions to a new
-chat. This is a **graceful degradation**, not a seamless continuation:
+chat. This is **graceful degradation**, not a seamless continuation:
 
-- **Snapshot** transfers a compressed summary (~10% of the limit). All
-  details that did not fit in the summary are lost.
+- **Snapshot** transfers a compressed summary (~10% of the limit).
+  Everything that did not fit in the summary is lost.
 - **RAG** transfers the top-5 fragments semantically close to the
-  current query. Fragments unrelated to the current topic do not surface.
+  current query. Fragments unrelated to the current topic do not
+  surface.
 - **Both** combine, but the model still treats the transferred data as
   a **document**, not as its own memory.
 
@@ -110,19 +149,6 @@ The practical consequence: after a transition you cannot rely on
   (`deepseek_length_limit.readable_percent`).
 
 Full discussion: [Session management](../docs/guides/session-management.md).
-
-## Conventions
-
-- **API key** stored in `.examples-api-key` in the current directory.
-  All three language subdirectories have their own copy.
-- **No third-party SDKs.** The examples show the raw HTTP contract.
-  OpenAI SDK is mentioned in `docs/guides/usage.md`, but not used here —
-  it hides `context_status` and precise error codes.
-- **Non-zero exit** on unexpected errors.
-- **`context_status` is printed** after every chat response, so you can
-  watch the counter grow.
-- **Test files** for `04_files` are created on the fly in
-  `test_files/` and removed on exit.
 
 ## Endpoint coverage
 
@@ -147,9 +173,9 @@ Full discussion: [Session management](../docs/guides/session-management.md).
 | Tool calling (`tools`) | 02 |
 | `extra_body.deepthink` | 03 |
 | `extra_body.web_search` | 03 |
-| `file_id` in `content[]` | 04 |
 | Multipart single file | 04 |
 | Multipart multiple files (up to 50) | 04 |
+| Two-phase upload (`file_id`) | 04 |
 | Mixed text + file | 04 |
 | Context monitoring | 05 |
 | 409 recovery | 05 |
@@ -158,19 +184,6 @@ Full discussion: [Session management](../docs/guides/session-management.md).
 | 504 retry with backoff | 05 |
 | Fresh vs restore chat | 05 |
 | Temporary chat | 05 |
-
-## Removed examples
-
-Earlier versions of this repository shipped:
-
-- `examples/basic.{js,py}` — covered by `01_getting_started`.
-- `examples/advanced.{js,py}` — covered by `02`, `03`, `04`.
-- `examples/multiple-files.{js,py}` — covered by `04_files`.
-- `examples/register.py` — covered by `01_getting_started`.
-
-They were removed to avoid divergence. A single, up-to-date set of
-numbered examples is preferable to two parallel ones, one of which
-inevitably rots.
 
 ## Related documentation
 
@@ -189,16 +202,21 @@ inevitably rots.
 **`✗ Server unreachable`** — the server is not running. Start it with
 `npm start` in the project root.
 
-**`✗ Invalid API key`** — `.examples-api-key` contains a key that does
-not match the server's `.api-key`. Delete `.examples-api-key` and rerun
-any example.
+**`✗ Invalid API key`** — `API_KEY` in the example does not match the
+server's `.api-key`. Re-register via `/v1/register` and update the
+example.
 
 **`✗ HTTP 409`** — context is exhausted. `05_session` handles this
-automatically. Other examples do not — they assume the session is short.
+automatically. Other examples do not — they assume the session is
+short. Call `POST /v1/chat/new {restore: false}` before retrying.
 
-**`✗ File not found for file_id`** — the `file_id` was already used. In
-this implementation, `file_id` is **single-use**: the file is deleted
-after the request that referenced it. Upload again to reuse.
+**`✗ File not found for file_id`** — the `file_id` was already used.
+In this implementation, `file_id` is **single-use**: the file is
+deleted after the request that referenced it. Upload again to reuse.
 
-**`⚠ DeepSeek server busy`** — the server will shut down in ~500 ms.
-This is by design. Wait for an external supervisor to restart it.
+**`⚠ DeepSeek server busy`** — the server shuts down ~500 ms after
+responding. This is by design. Wait for an external supervisor to
+restart it.
+
+**`EADDRINUSE: address already in use :::3000`** — port 3000 is held
+by another process. See `tests/README.md` → "Port already in use".

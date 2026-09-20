@@ -1,253 +1,165 @@
-#!/usr/bin/env node
 /**
  * 04 — File uploads.
  *
- * Covers:
- *   - POST /v1/files                            → upload, get file_id
- *   - POST /v1/chat/completions (JSON)          → use file_id in messages
- *   - POST /v1/chat/completions (multipart)     → attach file(s) directly
- *   - Mixed content                             → text + file in one message
- *
  * Two ways to attach a file:
- *   A. Upload first via /v1/files, then reference file_id in a normal
- *      JSON request.
- *   B. Attach directly with multipart/form-data — no prior upload.
  *
- * IMPORTANT — file_id is single-use in this implementation.
- * After a chat request that references a file_id, the file is deleted
- * from disk (or handed to the RAG indexing queue and deleted later).
- * The next request with the same file_id returns 400. To reuse, upload
- * again.
+ *   A. Multipart form — attach the file directly to the chat request.
+ *      No prior upload. Simplest path.
  *
- * Limits: 100 MB per file, 50 files per request.
+ *   B. Two-phase — upload via POST /v1/files, get a file_id, then
+ *      reference it inside the messages content array. Mirrors the
+ *      OpenAI Assistants flow.
  *
- * Requires Node.js 18+ (native fetch, FormData, Blob).
+ *     node 04_files.js
+ *
+ * IMPORTANT — file_id is single-use in this implementation. After the
+ * request that references it, the file is deleted from disk (or handed
+ * to the RAG indexing queue and deleted later). The next request with
+ * the same file_id returns 400. To reuse, upload again.
+ *
+ * Supported extensions: PDF, DOC(X), XLS(X), PPT(X), images, plain text,
+ * source code, JSON, YAML, HTML, CSS. Limits: 100 MB per file, 50 files
+ * per request.
  */
 
 import fs from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import {
-  BASE_URL, banner, section,
-  loadOrRegisterKey, printResponse,
-} from './common.js';
+const BASE_URL = 'http://localhost:3000';
+const API_KEY = 'deepseek_...'; // replace
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const TEST_DIR = path.join(__dirname, 'test_files');
+// ─────────────────────────────────────────────────────────────────────
+// Prepare test files
+// ─────────────────────────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------
-// Test files
-// ---------------------------------------------------------------------
+await fs.writeFile('/tmp/notes.txt',
+  'Project notes\n' +
+  '-------------\n' +
+  'Goal: automate DeepSeek Web via Playwright.\n' +
+  'Marker: NOTES42.\n'
+);
 
-async function prepareTestFiles() {
-  await fs.rm(TEST_DIR, { recursive: true, force: true });
-  await fs.mkdir(TEST_DIR, { recursive: true });
+await fs.writeFile('/tmp/second.txt', 'Second file. Marker: SECOND99.\n');
 
-  await fs.writeFile(path.join(TEST_DIR, 'notes.txt'),
-    'Project notes\n' +
-    '-------------\n' +
-    'Goal: automate DeepSeek Web via Playwright.\n' +
-    'Status: selectors verified, context management done.\n' +
-    'Next: finalize documentation.\n'
-  );
+// ─────────────────────────────────────────────────────────────────────
+// 1. Multipart — single file, no prior upload
+// ─────────────────────────────────────────────────────────────────────
+//
+// Send the file directly in the chat request using multipart/form-data.
+// The file goes into the `files` field; the JSON payload goes into
+// the `data` field.
+//
+// The server forwards the file to DeepSeek's UI. No file_id involved.
 
-  await fs.writeFile(path.join(TEST_DIR, 'requirements.md'),
-    '# Requirements\n\n' +
-    '- Node.js 18+\n' +
-    '- fetch\n' +
-    '- Server running at localhost:3000\n'
-  );
-
-  await fs.writeFile(path.join(TEST_DIR, 'questions.txt'),
-    '1. When will the next release be?\n' +
-    '2. What are the open issues?\n' +
-    '3. Who is the maintainer?\n'
-  );
-}
-
-async function cleanupTestFiles() {
-  await fs.rm(TEST_DIR, { recursive: true, force: true });
-}
-
-// ---------------------------------------------------------------------
-// Upload
-// ---------------------------------------------------------------------
-
-async function uploadFile(apiKey, filePath) {
-  const content = await fs.readFile(filePath);
-  const name = path.basename(filePath);
-
+{
   const form = new FormData();
-  form.append('file', new Blob([content]), name);
+  const content = await fs.readFile('/tmp/notes.txt');
+  form.append('files', new Blob([content]), 'notes.txt');
+  form.append('data', JSON.stringify({
+    messages: [{ role: 'user', content: 'What is the marker in this file?' }],
+  }));
 
-  // Do NOT set Content-Type: fetch will add it with the boundary.
-  const r = await fetch(`${BASE_URL}/v1/files`, {
+  // Do NOT set Content-Type — fetch adds the boundary automatically.
+  const r = await fetch(`${BASE_URL}/v1/chat/completions`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}` },
+    headers: { 'Authorization': `Bearer ${API_KEY}` },
     body: form,
   });
 
-  if (!r.ok) {
-    console.error(`✗ Upload failed: HTTP ${r.status} — ${await r.text()}`);
-    process.exit(1);
-  }
-
-  return r.json();
+  const data = await r.json();
+  console.log(data.choices[0].message.content);
+  // → The marker is NOTES42.
 }
 
-// ---------------------------------------------------------------------
-// Multipart chat
-// ---------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
+// 2. Multipart — multiple files (up to 50)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Repeat the `files` field for each file. Order is preserved.
+// The server validates each file's extension and size individually.
 
-async function sendChatMultipart(apiKey, messages, filePaths) {
+{
   const form = new FormData();
-  for (const p of filePaths) {
-    const content = await fs.readFile(p);
-    form.append('files', new Blob([content]), path.basename(p));
+  for (const path of ['/tmp/notes.txt', '/tmp/second.txt']) {
+    const content = await fs.readFile(path);
+    form.append('files', new Blob([content]), path.split('/').pop());
   }
-  form.append('data', JSON.stringify({ messages }));
+  form.append('data', JSON.stringify({
+    messages: [{ role: 'user', content: 'List the markers from both files.' }],
+  }));
 
   const r = await fetch(`${BASE_URL}/v1/chat/completions`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}` },
+    headers: { 'Authorization': `Bearer ${API_KEY}` },
     body: form,
   });
 
-  if (!r.ok) {
-    console.error(`✗ HTTP ${r.status}: ${await r.text()}`);
-    process.exit(1);
-  }
-
-  return r.json();
+  const data = await r.json();
+  console.log(data.choices[0].message.content);
+  // → NOTES42 and SECOND99.
 }
 
-// ---------------------------------------------------------------------
-// JSON chat (for file_id references)
-// ---------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
+// 3. Two-phase — upload first, get a file_id
+// ─────────────────────────────────────────────────────────────────────
+//
+// OpenAI-compatible endpoint. Returns a file object:
+//
+//   {
+//     "id": "file_1789891863600_abc12345",
+//     "object": "file",
+//     "bytes": 68,
+//     "created_at": 1789891863,
+//     "filename": "notes.txt",
+//     "purpose": "assistants"
+//   }
+//
+// The `id` can be referenced later inside a message's content array.
 
-async function sendChatJson(apiKey, messages) {
+const fileId = await (async () => {
+  const content = await fs.readFile('/tmp/notes.txt');
+  const form = new FormData();
+  form.append('file', new Blob([content]), 'notes.txt');
+
+  const r = await fetch(`${BASE_URL}/v1/files`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${API_KEY}` },
+    body: form,
+  });
+
+  const obj = await r.json();
+  console.log(obj);
+  return obj.id;
+})();
+
+// ─────────────────────────────────────────────────────────────────────
+// 4. Use file_id in a JSON chat request
+// ─────────────────────────────────────────────────────────────────────
+//
+// Reference the file via the content array — same shape as OpenAI.
+// A message can mix text and file parts in any order.
+
+{
   const r = await fetch(`${BASE_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${apiKey}`,
+      'Authorization': `Bearer ${API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What is the marker in this file?' },
+          { type: 'file', file: { file_id: fileId } },
+        ],
+      }],
+    }),
   });
 
-  if (!r.ok) {
-    console.error(`✗ HTTP ${r.status}: ${await r.text()}`);
-    process.exit(1);
-  }
-
-  return r.json();
+  const data = await r.json();
+  console.log(data.choices[0].message.content);
 }
 
-// ---------------------------------------------------------------------
-// 1. Upload via /v1/files and use file_id
-// ---------------------------------------------------------------------
-
-async function exampleFileId(apiKey) {
-  section('Example 1: upload via /v1/files, use file_id');
-
-  const fileObj = await uploadFile(apiKey, path.join(TEST_DIR, 'notes.txt'));
-  const fileId = fileObj.id;
-  console.log(`✓ Uploaded: ${fileObj.filename} (${fileObj.bytes} bytes)`);
-  console.log(`  file_id: ${fileId}`);
-
-  const messages = [{
-    role: 'user',
-    content: [
-      { type: 'text', text: 'Summarize this in one sentence.' },
-      { type: 'file', file: { file_id: fileId } },
-    ],
-  }];
-  const data = await sendChatJson(apiKey, messages);
-  printResponse(data);
-}
-
-// ---------------------------------------------------------------------
-// 2. Multipart, single file
-// ---------------------------------------------------------------------
-
-async function exampleMultipartSingle(apiKey) {
-  section('Example 2: multipart, single file');
-
-  const messages = [{
-    role: 'user',
-    content: 'What are the three questions in the attached file?',
-  }];
-  const data = await sendChatMultipart(apiKey, messages, [
-    path.join(TEST_DIR, 'questions.txt'),
-  ]);
-  printResponse(data);
-}
-
-// ---------------------------------------------------------------------
-// 3. Multipart, multiple files
-// ---------------------------------------------------------------------
-
-async function exampleMultipartMultiple(apiKey) {
-  section('Example 3: multipart, multiple files');
-
-  const messages = [{
-    role: 'user',
-    content: 'Compare these files and list what they have in common.',
-  }];
-  const paths = [
-    path.join(TEST_DIR, 'notes.txt'),
-    path.join(TEST_DIR, 'requirements.md'),
-    path.join(TEST_DIR, 'questions.txt'),
-  ];
-  const data = await sendChatMultipart(apiKey, messages, paths);
-  printResponse(data);
-}
-
-// ---------------------------------------------------------------------
-// 4. Mixed: text + file_id in the same message
-// ---------------------------------------------------------------------
-
-async function exampleMixed(apiKey) {
-  section('Example 4: mixed content (text + file_id)');
-
-  const fileObj = await uploadFile(apiKey, path.join(TEST_DIR, 'requirements.md'));
-  const fileId = fileObj.id;
-  console.log(`✓ Uploaded: ${fileObj.filename}  file_id: ${fileId}`);
-
-  const messages = [{
-    role: 'user',
-    content: [
-      { type: 'text', text: 'Look at the requirements. What Node.js version is needed?' },
-      { type: 'file', file: { file_id: fileId } },
-    ],
-  }];
-  const data = await sendChatJson(apiKey, messages);
-  printResponse(data);
-}
-
-// ---------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------
-
-async function main() {
-  banner('04 — File uploads');
-  await prepareTestFiles();
-
-  try {
-    const apiKey = await loadOrRegisterKey();
-    await exampleFileId(apiKey);
-    await exampleMultipartSingle(apiKey);
-    await exampleMultipartMultiple(apiKey);
-    await exampleMixed(apiKey);
-  } finally {
-    await cleanupTestFiles();
-  }
-
-  banner('Done.');
-}
-
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+// After this request, the file_id is dead. Reusing it returns:
+//   400 { "error": "File not found for file_id: file_..." }
+// To attach the same file again, upload it again.

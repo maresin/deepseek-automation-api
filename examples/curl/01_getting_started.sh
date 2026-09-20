@@ -2,82 +2,103 @@
 #
 # 01 — Getting started.
 #
-# Covers:
-#   - GET  /health
-#   - POST /v1/register           (create a session)
-#   - POST /v1/chat/completions   (single user message)
+# Register a session, then send one message.
 #
-# The API key is saved to .examples-api-key and reused by all
-# subsequent examples.
+#     export API_KEY=deepseek_...    (after step 2)
+#     bash 01_getting_started.sh
 #
-# Requires: curl, jq
+# Every command below is a complete, copy-paste-ready curl call.
+# For pretty JSON output, append:  | jq
+
+BASE_URL=http://localhost:3000
+
+# ─────────────────────────────────────────────────────────────────────
+# Step 1. Health check
+# ─────────────────────────────────────────────────────────────────────
 #
-set -euo pipefail
+# Confirm the server is up.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/common.sh"
+curl $BASE_URL/health
+# → {"status":"ok","timestamp":"2026-09-20T..."}
 
-# ---------------------------------------------------------------------
-# 1. Health check
-# ---------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────
+# Step 2. Register a session
+# ─────────────────────────────────────────────────────────────────────
+#
+# A "session" is one API key bound to one active browser chat. You
+# only need to do this once — save the key and reuse it.
+#
+# Response:
+#   {
+#     "api_key": "deepseek_1789662945767_s8un7bvjft",
+#     "message": "Store this API key securely."
+#   }
 
-check_health() {
-    local response
-    if ! response=$(curl -sS "$BASE_URL/health" 2>/dev/null); then
-        echo "✗ Server unreachable at $BASE_URL" >&2
-        echo "  Start it with: npm start" >&2
-        exit 1
-    fi
+curl -X POST $BASE_URL/v1/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"your@email.com","password":"your_password"}'
 
-    local status
-    status=$(echo "$response" | jq -r '.status // empty')
+# Copy the api_key value, then in your shell:
+#     export API_KEY=deepseek_1789662945767_s8un7bvjft
 
-    if [[ -z "$status" ]]; then
-        echo "✗ Health check returned unexpected response: $response" >&2
-        exit 1
-    fi
+# ─────────────────────────────────────────────────────────────────────
+# Step 3. Send a single user message
+# ─────────────────────────────────────────────────────────────────────
+#
+# The simplest possible request: one user message, no history, no
+# system prompt.
+#
+# A single user message without system/history is sent to DeepSeek
+# as-is — the server does NOT add "User:" prefixes in this case. This
+# keeps simple requests looking like a normal chat. See algorithm B1.
+#
+# Response shape:
+#   {
+#     "choices": [{
+#       "index": 0,
+#       "message": {"role": "assistant", "content": "Hello, API!"},
+#       "finish_reason": "stop"
+#     }],
+#     "usage": {"prompt_tokens": 5, "completion_tokens": 4, ...},
+#     "context_status": {
+#       "chars_used": 28,
+#       "chars_limit": 2400000,
+#       "percent_used": 0.0,
+#       "language_mix": {"latin": 1.0, ...},
+#       "deepseek_length_limit": {"detected": false, "readable_percent": null},
+#       "warning": null,
+#       "recommendation": null
+#     }
+#   }
 
-    echo "✓ Health: $status"
-}
+curl -X POST $BASE_URL/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Say Hello, API!"}]}'
 
-# ---------------------------------------------------------------------
-# 2. Registration
-# ---------------------------------------------------------------------
+# To extract only the assistant's reply:
+#
+#   curl -X POST ... | jq -r '.choices[0].message.content'
+#   → Hello, API!
+#
+# To see only the context counter:
+#
+#   curl -X POST ... | jq '.context_status'
+#   → {"chars_used": 28, "chars_limit": 2400000, "percent_used": 0, ...}
 
-# Covered by load_or_register_key() from common.sh.
-# If you need to force a new session, delete .examples-api-key and rerun.
-
-# ---------------------------------------------------------------------
-# 3. Basic chat
-# ---------------------------------------------------------------------
-
-basic_chat() {
-    local api_key="$1"
-
-    echo ""
-    echo "→ Sending a single user message..."
-
-    local messages
-    messages=$(jq -n '[{role: "user", content: "Say '\''Hello, API!'\''"}]')
-
-    local response
-    response=$(send_chat "$api_key" "$messages")
-    print_response "$response"
-}
-
-# ---------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------
-
-main() {
-    banner "01 — Getting started"
-
-    check_health
-    local api_key
-    api_key=$(load_or_register_key)
-    basic_chat "$api_key"
-
-    banner "Done."
-}
-
-main "$@"
+# ─────────────────────────────────────────────────────────────────────
+# What next
+# ─────────────────────────────────────────────────────────────────────
+#
+# Every successful response carries a context_status block. In long
+# sessions this becomes the client's early-warning system: the server
+# transitions to a new chat at 70% and 90% of the context limit, and
+# the client must be prepared for that.
+#
+# See:
+#   02_conversation.sh  — system prompts, multi-turn, tool calling
+#   03_features.sh      — DeepThink, Web Search
+#   04_files.sh         — file uploads
+#   05_session.sh       — context monitoring and error handling
+#
+# Full protocol: docs/guides/session-management.md

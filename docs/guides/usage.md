@@ -28,6 +28,8 @@ curl -X POST http://localhost:3000/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
+---
+
 ## Примеры
 
 ### System + User
@@ -417,3 +419,41 @@ SDK скрывает `context_status` и коды ошибок за станда
 
 См. [установку](installation.md), [управление сессией](session-management.md)
 и [тестирование](testing.md).
+
+__Примечание:__  
+В репозитории есть полный набор примеров на трёх языках — от
+регистрации до обработки ошибок. См.
+[`examples/`](https://github.com/maresin/deepseek-automation-api/tree/main/examples).
+
+Два вида:
+
+- **Runnable** — Python и JavaScript. Каждый файл запускается
+  end-to-end: регистрирует сессию, отправляет запрос, печатает
+  ответ. Замените `API_KEY` в начале файла и запустите.
+- **Reference** — cURL. Каждый `.sh` файл — последовательность
+  полных `curl`-команд. Копируйте по одной в терминал. Файлы не
+  предназначены для запуска целиком.
+
+| Файл | Что покрывает |
+|---|---|
+| `01_getting_started` | Регистрация, health, одно сообщение |
+| `02_conversation` | `system` + `user`, multi-turn, tool calling |
+| `03_features` | `extra_body.deepthink`, `extra_body.web_search` |
+| `04_files` | Multipart `files`, two-phase `file_id`, mixed content |
+| `05_session` | Мониторинг контекста, 409 / 503 / 401 / 504, переходы, деградация |
+
+Структура:
+
+```
+examples/
+├── README.md
+├── python/          — 5 файлов, runnable
+├── javascript/      — 5 файлов, runnable
+└── curl/            — 5 файлов, reference
+```
+
+**Обязательно прочитайте `05_session`** перед тем как строить клиент.
+Первые четыре примера оптимистичны — они предполагают, что сессия
+не переполняется, а сеть надёжна. В реальной работе это не так.
+`05` показывает полный клиентский протокол: два лимита, деградацию
+после перехода и обработку всех кодов ошибок.

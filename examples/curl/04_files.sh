@@ -2,259 +2,118 @@
 #
 # 04 — File uploads.
 #
-# Covers:
-#   - POST /v1/files                            → upload, get file_id
-#   - POST /v1/chat/completions (JSON)          → use file_id in messages
-#   - POST /v1/chat/completions (multipart)     → attach file(s) directly
-#   - Mixed content                             → text + file in one message
+# Two ways to attach a file:
 #
-# IMPORTANT — file_id is single-use in this implementation.
-# After a chat request that references a file_id, the file is deleted
-# from disk. The next request with the same file_id returns 400.
-# To reuse, upload again.
+#   A. Multipart form — attach the file directly to the chat request.
+#      No prior upload. Simplest path.
 #
-# Limits: 100 MB per file, 50 files per request.
+#   B. Two-phase — upload via POST /v1/files, get a file_id, then
+#      reference it inside the messages content array. Mirrors the
+#      OpenAI Assistants flow.
 #
-# Requires: curl, jq
+#     export API_KEY=deepseek_...
+#     bash 04_files.sh
 #
-set -euo pipefail
+# IMPORTANT — file_id is single-use in this implementation. After the
+# request that references it, the file is deleted from disk (or handed
+# to the RAG indexing queue and deleted later). The next request with
+# the same file_id returns 400. To reuse, upload again.
+#
+# Supported extensions: PDF, DOC(X), XLS(X), PPT(X), images, plain text,
+# source code, JSON, YAML, HTML, CSS. Limits: 100 MB per file, 50 files
+# per request.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/common.sh"
+BASE_URL=http://localhost:3000
 
-TEST_DIR="$SCRIPT_DIR/test_files"
+# ─────────────────────────────────────────────────────────────────────
+# Prepare test files
+# ─────────────────────────────────────────────────────────────────────
 
-# ---------------------------------------------------------------------
-# Test files
-# ---------------------------------------------------------------------
+printf 'Project notes\n-------------\nGoal: automate DeepSeek Web via Playwright.\nMarker: NOTES42.\n' > /tmp/notes.txt
+printf 'Second file. Marker: SECOND99.\n' > /tmp/second.txt
 
-prepare_test_files() {
-    rm -rf "$TEST_DIR"
-    mkdir -p "$TEST_DIR"
+# ─────────────────────────────────────────────────────────────────────
+# 1. Multipart — single file, no prior upload
+# ─────────────────────────────────────────────────────────────────────
+#
+# Send the file directly in the chat request using multipart/form-data.
+# The file goes into the `files` field; the JSON payload goes into
+# the `data` field.
+#
+# The server forwards the file to DeepSeek's UI. No file_id involved.
 
-    cat > "$TEST_DIR/notes.txt" <<'EOF'
-Project notes
--------------
-Goal: automate DeepSeek Web via Playwright.
-Status: selectors verified, context management done.
-Next: finalize documentation.
-EOF
+curl -X POST $BASE_URL/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -F "files=@/tmp/notes.txt" \
+  -F 'data={"messages":[{"role":"user","content":"What is the marker in this file?"}]}'
 
-    cat > "$TEST_DIR/requirements.md" <<'EOF'
-# Requirements
+# → The marker is NOTES42.
 
-- bash, curl, jq
-- Server running at localhost:3000
-EOF
+# ─────────────────────────────────────────────────────────────────────
+# 2. Multipart — multiple files (up to 50)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Repeat the -F "files=@..." argument for each file. Order is preserved.
+# The server validates each file's extension and size individually.
 
-    cat > "$TEST_DIR/questions.txt" <<'EOF'
-1. When will the next release be?
-2. What are the open issues?
-3. Who is the maintainer?
-EOF
-}
+curl -X POST $BASE_URL/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -F "files=@/tmp/notes.txt" \
+  -F "files=@/tmp/second.txt" \
+  -F 'data={"messages":[{"role":"user","content":"List the markers from both files."}]}'
 
-cleanup_test_files() {
-    rm -rf "$TEST_DIR"
-}
+# → NOTES42 and SECOND99.
 
-# ---------------------------------------------------------------------
-# Upload
-# ---------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────
+# 3. Two-phase — upload first, get a file_id
+# ─────────────────────────────────────────────────────────────────────
+#
+# OpenAI-compatible endpoint. Returns a file object:
+#
+#   {
+#     "id": "file_1789891863600_abc12345",
+#     "object": "file",
+#     "bytes": 68,
+#     "created_at": 1789891863,
+#     "filename": "notes.txt",
+#     "purpose": "assistants"
+#   }
+#
+# The `id` can be referenced later inside a message's content array.
 
-# Usage: upload_file "$API_KEY" /path/to/file
-# Prints the file_id on stdout.
-upload_file() {
-    local api_key="$1"
-    local file_path="$2"
+curl -X POST $BASE_URL/v1/files \
+  -H "Authorization: Bearer $API_KEY" \
+  -F "file=@/tmp/notes.txt"
 
-    local response
-    response=$(curl -sS -X POST "$BASE_URL/v1/files" \
-        -H "Authorization: Bearer $api_key" \
-        -F "file=@$file_path")
+# Copy the id from the response, then:
+#     FILE_ID=file_1789891863600_abc12345
+#     export FILE_ID
 
-    local file_id
-    file_id=$(echo "$response" | jq -r '.id // empty')
+# Or capture it in one step:
+#     export FILE_ID=$(curl -s -X POST $BASE_URL/v1/files \
+#       -H "Authorization: Bearer $API_KEY" \
+#       -F "file=@/tmp/notes.txt" | jq -r .id)
 
-    if [[ -z "$file_id" ]]; then
-        echo "✗ Upload failed: $response" >&2
-        exit 1
-    fi
+# ─────────────────────────────────────────────────────────────────────
+# 4. Use file_id in a JSON chat request
+# ─────────────────────────────────────────────────────────────────────
+#
+# Reference the file via the content array — same shape as OpenAI.
+# A message can mix text and file parts in any order.
 
-    echo "$file_id"
-}
+curl -X POST $BASE_URL/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"messages\": [{
+      \"role\": \"user\",
+      \"content\": [
+        {\"type\": \"text\", \"text\": \"What is the marker in this file?\"},
+        {\"type\": \"file\", \"file\": {\"file_id\": \"$FILE_ID\"}}
+      ]
+    }]
+  }"
 
-# ---------------------------------------------------------------------
-# Multipart chat
-# ---------------------------------------------------------------------
-
-# Usage: send_chat_multipart "$API_KEY" '<messages-json>' file1 [file2 ...]
-send_chat_multipart() {
-    local api_key="$1"
-    local messages_json="$2"
-    shift 2
-
-    local data
-    data=$(jq -n --argjson m "$messages_json" '{messages: $m}')
-
-    # Build curl args dynamically.
-    local args=(-sS -X POST "$BASE_URL/v1/chat/completions"
-        -H "Authorization: Bearer $api_key")
-    for f in "$@"; do
-        args+=(-F "files=@$f")
-    done
-    args+=(-F "data=$data")
-
-    local response
-    response=$(curl "${args[@]}")
-
-    local err
-    err=$(echo "$response" | jq -r '.error // empty')
-    if [[ -n "$err" ]]; then
-        echo "✗ API error: $err" >&2
-        exit 1
-    fi
-
-    echo "$response"
-}
-
-# ---------------------------------------------------------------------
-# JSON chat (for file_id references)
-# ---------------------------------------------------------------------
-
-send_chat_json() {
-    local api_key="$1"
-    local messages_json="$2"
-
-    local payload
-    payload=$(jq -n --argjson m "$messages_json" '{messages: $m}')
-
-    local response
-    response=$(curl -sS -X POST "$BASE_URL/v1/chat/completions" \
-        -H "Authorization: Bearer $api_key" \
-        -H "Content-Type: application/json" \
-        -d "$payload")
-
-    local err
-    err=$(echo "$response" | jq -r '.error // empty')
-    if [[ -n "$err" ]]; then
-        echo "✗ API error: $err" >&2
-        exit 1
-    fi
-
-    echo "$response"
-}
-
-# ---------------------------------------------------------------------
-# 1. Upload via /v1/files and use file_id
-# ---------------------------------------------------------------------
-
-example_file_id() {
-    local api_key="$1"
-    section "Example 1: upload via /v1/files, use file_id"
-
-    local file_id
-    file_id=$(upload_file "$api_key" "$TEST_DIR/notes.txt")
-    echo "✓ Uploaded: notes.txt  file_id: $file_id"
-
-    local messages
-    messages=$(jq -n --arg fid "$file_id" '[{
-        role: "user",
-        content: [
-            {type: "text", text: "Summarize this in one sentence."},
-            {type: "file", file: {file_id: $fid}}
-        ]
-    }]')
-
-    local response
-    response=$(send_chat_json "$api_key" "$messages")
-    print_response "$response"
-}
-
-# ---------------------------------------------------------------------
-# 2. Multipart, single file
-# ---------------------------------------------------------------------
-
-example_multipart_single() {
-    local api_key="$1"
-    section "Example 2: multipart, single file"
-
-    local messages
-    messages=$(jq -n '[{
-        role: "user",
-        content: "What are the three questions in the attached file?"
-    }]')
-
-    local response
-    response=$(send_chat_multipart "$api_key" "$messages" "$TEST_DIR/questions.txt")
-    print_response "$response"
-}
-
-# ---------------------------------------------------------------------
-# 3. Multipart, multiple files
-# ---------------------------------------------------------------------
-
-example_multipart_multiple() {
-    local api_key="$1"
-    section "Example 3: multipart, multiple files"
-
-    local messages
-    messages=$(jq -n '[{
-        role: "user",
-        content: "Compare these files and list what they have in common."
-    }]')
-
-    local response
-    response=$(send_chat_multipart "$api_key" "$messages" \
-        "$TEST_DIR/notes.txt" \
-        "$TEST_DIR/requirements.md" \
-        "$TEST_DIR/questions.txt")
-    print_response "$response"
-}
-
-# ---------------------------------------------------------------------
-# 4. Mixed: text + file_id in the same message
-# ---------------------------------------------------------------------
-
-example_mixed() {
-    local api_key="$1"
-    section "Example 4: mixed content (text + file_id)"
-
-    local file_id
-    file_id=$(upload_file "$api_key" "$TEST_DIR/requirements.md")
-    echo "✓ Uploaded: requirements.md  file_id: $file_id"
-
-    local messages
-    messages=$(jq -n --arg fid "$file_id" '[{
-        role: "user",
-        content: [
-            {type: "text", text: "Look at the requirements. What tools are needed?"},
-            {type: "file", file: {file_id: $fid}}
-        ]
-    }]')
-
-    local response
-    response=$(send_chat_json "$api_key" "$messages")
-    print_response "$response"
-}
-
-# ---------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------
-
-main() {
-    banner "04 — File uploads"
-    prepare_test_files
-    trap cleanup_test_files EXIT
-
-    local api_key
-    api_key=$(load_or_register_key)
-    example_file_id "$api_key"
-    example_multipart_single "$api_key"
-    example_multipart_multiple "$api_key"
-    example_mixed "$api_key"
-
-    banner "Done."
-}
-
-main "$@"
+# After this request, the file_id is dead. Reusing it returns:
+#   400 {"error": "File not found for file_id: file_..."}
+# To attach the same file again, upload it again.

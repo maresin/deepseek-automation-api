@@ -1,95 +1,152 @@
-#!/usr/bin/env node
 /**
  * 02 — Conversation patterns.
  *
- * Covers:
- *   - system + user (buildPrompt adds role prefixes)
- *   - multi-turn with assistant history
- *   - tool calling (function calling)
+ * Three ways to structure the messages array.
  *
- * Requires Node.js 18+ (native fetch).
+ *     node 02_conversation.js
  */
 
-import {
-  banner, section,
-  loadOrRegisterKey, sendChat, printResponse,
-} from './common.js';
+const BASE_URL = 'http://localhost:3000';
+const API_KEY = 'deepseek_...'; // replace with your key from /v1/register
 
-// ---------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
 // 1. system + user
-// ---------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────
+//
+// The server prepends "System:" and "User:" prefixes to the prompt
+// it sends to DeepSeek, because the web interface has a single textarea
+// and no notion of roles. See algorithm B1.
+//
+// Prompt sent to DeepSeek:
+//   System: You are an assistant that speaks like a pirate.
+//   User: Tell me a short joke.
+//
+// Response (abbreviated):
+//   { "choices": [{ "message": { "role": "assistant",
+//                                "content": "Why did the pirate..." } }] }
 
-async function exampleSystemUser(apiKey) {
-  section('Example 1: system + user');
-
-  const messages = [
-    { role: 'system', content: 'You are an assistant that speaks like a pirate.' },
-    { role: 'user',   content: 'Tell me a short joke.' },
-  ];
-  const data = await sendChat(apiKey, messages);
-  printResponse(data);
-}
-
-// ---------------------------------------------------------------------
-// 2. Multi-turn
-// ---------------------------------------------------------------------
-
-async function exampleMultiTurn(apiKey) {
-  section('Example 2: multi-turn');
-
-  const messages = [
-    { role: 'user',      content: 'What is the capital of France?' },
-    { role: 'assistant', content: 'The capital of France is Paris.' },
-    { role: 'user',      content: 'What is the most famous museum there?' },
-  ];
-  const data = await sendChat(apiKey, messages);
-  printResponse(data);
-}
-
-// ---------------------------------------------------------------------
-// 3. Tool calling
-// ---------------------------------------------------------------------
-
-async function exampleToolCalling(apiKey) {
-  section('Example 3: tool calling');
-
-  const tools = [{
-    type: 'function',
-    function: {
-      name: 'get_weather',
-      description: 'Get current weather for a city',
-      parameters: {
-        type: 'object',
-        properties: {
-          location: { type: 'string', description: 'City name' },
-          unit: { type: 'string', enum: ['celsius', 'fahrenheit'] },
-        },
-        required: ['location'],
-      },
-    },
-  }];
-
-  const messages = [
-    { role: 'user', content: 'What is the weather in Moscow?' },
-  ];
-  const data = await sendChat(apiKey, messages, { tools });
-  printResponse(data);
-}
-
-// ---------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------
-
-async function main() {
-  banner('02 — Conversation patterns');
-  const apiKey = await loadOrRegisterKey();
-  await exampleSystemUser(apiKey);
-  await exampleMultiTurn(apiKey);
-  await exampleToolCalling(apiKey);
-  banner('Done.');
-}
-
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
+const r1 = await fetch(`${BASE_URL}/v1/chat/completions`, {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${API_KEY}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    messages: [
+      { role: 'system', content: 'You are an assistant that speaks like a pirate.' },
+      { role: 'user',   content: 'Tell me a short joke.' },
+    ],
+  }),
 });
+
+const d1 = await r1.json();
+console.log(d1.choices[0].message.content);
+
+// ─────────────────────────────────────────────────────────────────────
+// 2. Multi-turn (conversation with history)
+// ─────────────────────────────────────────────────────────────────────
+//
+// The full history is sent in one request. The assistant's earlier
+// reply becomes part of the prompt. The model sees the thread and
+// can follow it.
+//
+// Prompt sent to DeepSeek:
+//   User: What is the capital of France?
+//   Assistant: The capital of France is Paris.
+//   User: What is the most famous museum there?
+
+const r2 = await fetch(`${BASE_URL}/v1/chat/completions`, {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${API_KEY}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    messages: [
+      { role: 'user',      content: 'What is the capital of France?' },
+      { role: 'assistant', content: 'The capital of France is Paris.' },
+      { role: 'user',      content: 'What is the most famous museum there?' },
+    ],
+  }),
+});
+
+const d2 = await r2.json();
+console.log(d2.choices[0].message.content);
+// → The most famous museum in Paris is the Louvre.
+
+// ─────────────────────────────────────────────────────────────────────
+// 3. Tool calling (function calling)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Tools are declared in the OpenAI format. When the model decides to
+// call a tool, the response contains tool_calls instead of content.
+//
+// IMPORTANT — the server does NOT execute tools. It only returns the
+// call in OpenAI format. Executing the tool and sending the result
+// back is the client's responsibility. This is the same contract as
+// OpenAI.
+//
+// Response when the model chooses to call:
+//   {
+//     "choices": [{
+//       "message": {
+//         "role": "assistant",
+//         "content": null,
+//         "tool_calls": [{
+//           "id": "call_1789891863600_0",
+//           "type": "function",
+//           "function": {
+//             "name": "get_weather",
+//             "arguments": "{\"location\":\"Moscow\"}"
+//           }
+//         }]
+//       },
+//       "finish_reason": "tool_calls"
+//     }]
+//   }
+//
+// Note: function.arguments is a JSON *string*, not an object.
+// Parse it with JSON.parse(...) on the client side.
+
+const r3 = await fetch(`${BASE_URL}/v1/chat/completions`, {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${API_KEY}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    messages: [
+      { role: 'user', content: 'What is the weather in Moscow?' },
+    ],
+    tools: [{
+      type: 'function',
+      function: {
+        name: 'get_weather',
+        description: 'Get current weather for a city',
+        parameters: {
+          type: 'object',
+          properties: {
+            location: { type: 'string', description: 'City name' },
+          },
+          required: ['location'],
+        },
+      },
+    }],
+  }),
+});
+
+const d3 = await r3.json();
+const message = d3.choices[0].message;
+
+if (message.tool_calls) {
+  const call = message.tool_calls[0];
+  console.log(call.function.name);       // → get_weather
+  console.log(call.function.arguments);  // → {"location":"Moscow"}
+
+  // Parse arguments on the client side:
+  const args = JSON.parse(call.function.arguments);
+  console.log(args.location);            // → Moscow
+} else {
+  // The model chose not to call — it answered directly.
+  console.log(message.content);
+}

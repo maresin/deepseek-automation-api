@@ -2,100 +2,88 @@
 #
 # 03 — Feature toggles.
 #
-# Covers:
-#   - extra_body.deepthink: true     → DeepThink (R1)
-#   - extra_body.web_search: true    → Web Search
-#   - both at once
+#   extra_body.deepthink   → DeepThink (R1)
+#   extra_body.web_search  → Web Search
 #
-# Important: toggles are PER-REQUEST. If a request omits
-# extra_body.deepthink, the server explicitly disables DeepThink.
+#     export API_KEY=deepseek_...
+#     bash 03_features.sh
 #
-# Requires: curl, jq
+# Toggles are PER-REQUEST. If a request omits deepthink, the server
+# explicitly disables it before sending — state does not leak between
+# calls. Pass the flags every time you want them on.
 #
-set -euo pipefail
+# Timing note: DeepThink takes significantly longer (60–120s vs 15–30s).
+#
+# Context note: DeepThink generates internal reasoning that is not shown
+# in the final answer but still consumes context. The server multiplies
+# the response length by DEEPSEEK_DEEPTHINK_MULTIPLIER (default 2.5)
+# when updating context_status.chars_used. See algorithm C7.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/common.sh"
+BASE_URL=http://localhost:3000
 
-# ---------------------------------------------------------------------
-# 1. DeepThink only
-# ---------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────
+# 1. DeepThink (R1) only
+# ─────────────────────────────────────────────────────────────────────
+#
+# Enables DeepThink for this single request. The server clicks the
+# toggle before sending, then sends the message.
+#
+# The toggle does NOT persist. The next request without deepthink
+# will explicitly turn it off.
+#
+# Note the longer curl timeout (--max-time 300) — DeepThink can take
+# up to ~2 minutes.
 
-example_deepthink() {
-    local api_key="$1"
-    section "Example 1: DeepThink"
+curl -X POST $BASE_URL/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  --max-time 300 \
+  -d '{
+    "messages": [{"role":"user","content":"Explain quantum entanglement in simple terms."}],
+    "extra_body": {"deepthink": true}
+  }'
 
-    local messages extra response
-    messages=$(jq -n '[{role: "user", content: "Explain quantum entanglement in simple terms."}]')
-    extra='{"deepthink": true}'
-
-    response=$(send_chat "$api_key" "$messages" "" "$extra")
-    print_response "$response"
-}
-
-# ---------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────
 # 2. Web Search only
-# ---------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────
+#
+# Enables Web Search for this single request. Best for recent-events
+# questions: without it the model answers from its training cutoff;
+# with it, it searches first.
 
-example_web_search() {
-    local api_key="$1"
-    section "Example 2: Web Search"
+curl -X POST $BASE_URL/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role":"user","content":"What are the latest developments in AI?"}],
+    "extra_body": {"web_search": true}
+  }'
 
-    local messages extra response
-    messages=$(jq -n '[{role: "user", content: "What are the latest developments in AI?"}]')
-    extra='{"web_search": true}'
+# ─────────────────────────────────────────────────────────────────────
+# 3. Both at once
+# ─────────────────────────────────────────────────────────────────────
+#
+# DeepThink + Web Search: the model searches, then reasons about the
+# results before answering. Slowest mode, most thorough.
 
-    response=$(send_chat "$api_key" "$messages" "" "$extra")
-    print_response "$response"
-}
+curl -X POST $BASE_URL/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  --max-time 300 \
+  -d '{
+    "messages": [{"role":"user","content":"Compare the latest AI regulation proposals in the EU and the US."}],
+    "extra_body": {"deepthink": true, "web_search": true}
+  }'
 
-# ---------------------------------------------------------------------
-# 3. Both
-# ---------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────
+# 4. Reset — omitting extra_body turns both toggles off
+# ─────────────────────────────────────────────────────────────────────
+#
+# Even though the previous request had both toggles on, this one runs
+# in plain mode. The server explicitly resets toggles on every request.
+# Clients cannot rely on toggle state persisting between calls.
 
-example_both() {
-    local api_key="$1"
-    section "Example 3: DeepThink + Web Search"
-
-    local messages extra response
-    messages=$(jq -n '[{role: "user", content: "Compare the latest AI regulation proposals in the EU and the US."}]')
-    extra='{"deepthink": true, "web_search": true}'
-
-    response=$(send_chat "$api_key" "$messages" "" "$extra")
-    print_response "$response"
-}
-
-# ---------------------------------------------------------------------
-# 4. Reset — toggles do not persist
-# ---------------------------------------------------------------------
-
-example_reset() {
-    local api_key="$1"
-    section "Example 4: reset (no extra_body)"
-
-    local messages response
-    messages=$(jq -n '[{role: "user", content: "What is 2 + 2?"}]')
-
-    # No 4th argument → no extra_body → both toggles reset to false.
-    response=$(send_chat "$api_key" "$messages")
-    print_response "$response"
-}
-
-# ---------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------
-
-main() {
-    banner "03 — Feature toggles"
-    local api_key
-    api_key=$(load_or_register_key)
-
-    example_deepthink "$api_key"
-    example_web_search "$api_key"
-    example_both "$api_key"
-    example_reset "$api_key"
-
-    banner "Done."
-}
-
-main "$@"
+curl -X POST $BASE_URL/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"What is 2 + 2?"}]}'

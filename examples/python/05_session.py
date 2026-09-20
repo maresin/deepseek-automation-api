@@ -1,46 +1,40 @@
-#!/usr/bin/env python3
 """
 05 — Session management and error handling.
 
-The most important example. The first four are optimistic: they assume
-the session never overflows and the network is reliable. Real usage is
-different.
+The other examples assume the session never overflows and the network
+is reliable. Real usage is different.
 
-Covers:
-  - Monitoring context_status on every response
-  - HTTP 409 (context_exhausted) → /v1/chat/new → retry
-  - HTTP 503 (server_busy)       → save state, wait for restart
-  - HTTP 401 (invalid_key)       → re-register
-  - HTTP 504 (timeout)           → retry with backoff
-  - /v1/chat/new {restore: true/false}
-  - /v1/context/status
-  - /v1/chat/single  (temporary chat)
+Two independent limits
+──────────────────────
+  context_status.chars_limit           — our estimate:
+                                          1_000_000 tokens × language_coefficient
+  context_status.deepseek_length_      — the real limit DeepSeek actually read
+    limit.readable_percent               (appears only when the banner fires)
 
-Key concepts (see docs/guides/session-management.md):
+The estimate is intentionally the EARLIER of the two. Transitions are
+triggered by the estimate; the real banner is an emergency path.
 
-  Two limits, not one
-  -------------------
-  * CHARS_LIMIT (context_status.chars_limit) is OUR estimate:
-    1_000_000 tokens × language_coefficient.
-  * deepseek_length_limit.readable_percent is the REAL limit — what
-    DeepSeek actually read. It appears only at the moment of overflow.
+Graceful degradation
+────────────────────
+When a chat reaches the limit, the server transitions to a NEW chat.
+Snapshot and RAG transfer only a fraction of the old context. Even with
+both enabled, the model treats the transferred content as a DOCUMENT,
+not as its own memory. Quality drops after every transition.
 
-  Graceful degradation
-  --------------------
-  When the chat reaches the limit, the server transitions to a NEW chat.
-  Snapshot and RAG transfer only a fraction of the old context. Even
-  with both enabled, the model treats the transferred data as a
-  DOCUMENT, not as its own memory. Quality drops after every transition.
-
-  Client responsibilities
-  -----------------------
-  1. Check context_status on every successful response.
-  2. Log warning changes (null → context_above_70 → context_near_limit).
-  3. On 409: read recovery, call /v1/chat/new, retry.
-  4. On 503: do NOT retry — the server is shutting down.
-  5. On 401: re-register.
-  6. On 504: retry with exponential backoff.
+Client responsibilities
+───────────────────────
+  1. Inspect context_status on EVERY successful response.
+  2. Log warning changes: null → context_above_70 → context_near_limit.
+  3. On 409 context_exhausted: call /v1/chat/new, retry.
+  4. On 503 server_busy: do NOT retry — the server is shutting down.
+  5. On 401 invalid_key: re-register via /v1/register.
+  6. On 504 timeout: retry with exponential backoff.
   7. Keep critical facts in the system message — not in messages[].
+
+    pip install requests
+    python 05_session.py
+
+Full protocol: docs/guides/session-management.md
 """
 
 import sys
@@ -48,34 +42,25 @@ import time
 
 import requests
 
-from common import (
-    BASE_URL, banner, section,
-    load_or_register_key, print_response, print_context_status,
-)
+BASE_URL = "http://localhost:3000"
+API_KEY = "deepseek_..."  # replace
 
 
-# =====================================================================
-# Core: send a message with full error handling
-# =====================================================================
+# ─────────────────────────────────────────────────────────────────────
+# The core: chat() with full error handling
+# ─────────────────────────────────────────────────────────────────────
+#
+# One function, because retry logic must live somewhere. Everything
+# else in this file is either documentation or a demo call.
 
-class SessionLost(Exception):
-    """Raised when the session cannot be recovered automatically."""
-
-
-def send_message(
-    api_key: str,
-    messages: list,
-    *,
-    extra_body: dict | None = None,
-    max_retries: int = 3,
-) -> dict:
+def chat(messages, extra_body=None, max_retries=3):
     """
-    Send a message with the full client-side protocol.
+    Send a chat request with full error handling.
 
-    Returns the successful response payload (dict).
-    Raises SessionLost if the session cannot be recovered.
+    Returns the parsed response dict on success.
+    Raises RuntimeError or TimeoutError on unrecoverable errors.
     """
-    payload: dict = {"messages": messages}
+    payload = {"messages": messages}
     if extra_body:
         payload["extra_body"] = extra_body
 
@@ -84,42 +69,46 @@ def send_message(
 
     while True:
         attempt += 1
+
         try:
             r = requests.post(
                 f"{BASE_URL}/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {api_key}",
+                    "Authorization": f"Bearer {API_KEY}",
                     "Content-Type": "application/json",
                 },
                 json=payload,
                 timeout=300,
             )
         except requests.Timeout:
-            # Client-side timeout — treat like 504 below.
             r = None
 
-        # ---- 200 ----
+        # ─── 200 OK ────────────────────────────────────────────
         if r is not None and r.status_code == 200:
             data = r.json()
-            print_context_status(data)
+            _print_context_status(data)
             return data
 
-        # ---- 400 validation ----
+        # ─── 400 Validation error ──────────────────────────────
+        # Bad messages, bad tools, bad extra_body. Retrying will not
+        # help — the request itself is malformed.
         if r is not None and r.status_code == 400:
-            print(f"✗ Validation error: {r.text}", file=sys.stderr)
-            raise SessionLost("validation_error")
+            raise RuntimeError(f"Validation error: {r.text}")
 
-        # ---- 401 invalid key ----
+        # ─── 401 Invalid key ───────────────────────────────────
+        # The key does not match the server's .api-key. Re-register.
         if r is not None and r.status_code == 401:
-            print("✗ Invalid API key. Re-register via /v1/register.", file=sys.stderr)
-            raise SessionLost("invalid_key")
+            raise RuntimeError("Invalid API key. Call /v1/register.")
 
-        # ---- 409 context exhausted ----
+        # ─── 409 Context exhausted ─────────────────────────────
+        # The current chat is full. Start a new one, retry the same
+        # request. The retry does NOT count as a new attempt — the
+        # previous request was valid, it just hit the limit.
         if r is not None and r.status_code == 409:
             err = r.json().get("error", {})
             print(
-                f"⚠ Context exhausted: {err.get('chars_used')} / "
-                f"{err.get('chars_limit')} chars",
+                f"⚠ Context exhausted: "
+                f"{err.get('chars_used')} / {err.get('chars_limit')} chars",
                 file=sys.stderr,
             )
             print(
@@ -127,281 +116,131 @@ def send_message(
                 file=sys.stderr,
             )
             print(f"  RAG preserved: {err.get('rag_enabled')}", file=sys.stderr)
-            print(f"  Recovery: {err.get('recovery')}", file=sys.stderr)
 
-            # Transition to a new chat. Do NOT retry in the same chat —
-            # it will return 409 again.
-            _start_new_chat(api_key, restore=False)
-
-            # Retry the original request in the new chat. Context is
-            # smaller now, so this should succeed. We do not increment
-            # `attempt` for this retry: the previous request did not
-            # count as a real attempt.
-            attempt -= 1
+            _new_chat(restore=False)
+            attempt -= 1  # do not count this as a retry
             continue
 
-        # ---- 503 server busy ----
+        # ─── 503 Server busy ───────────────────────────────────
+        # DeepSeek backend refusing. The server shuts down by design
+        # after responding. Retrying is pointless for hours.
         if r is not None and r.status_code == 503:
-            print("🚫 DeepSeek server busy.", file=sys.stderr)
-            print(
-                "  The server will shut down in ~500 ms by design. "
-                "Wait for an external supervisor to restart it.",
-                file=sys.stderr,
-            )
-            # Do NOT retry. The server is going down.
-            raise SessionLost("server_busy")
+            raise RuntimeError("Server busy. Wait for restart.")
 
-        # ---- 504 timeout (or client-side timeout) ----
-        is_504 = (r is not None and r.status_code == 504) or r is None
-        if is_504:
+        # ─── 504 Timeout ───────────────────────────────────────
+        # The server did not get an answer from DeepSeek within its
+        # own timeout, or the client timed out. Retry with backoff.
+        is_timeout = (r is not None and r.status_code == 504) or r is None
+        if is_timeout:
             if attempt > max_retries:
-                print(
-                    f"✗ Timeout after {max_retries} attempts. Giving up.",
-                    file=sys.stderr,
-                )
-                raise SessionLost("timeout")
-
-            print(
-                f"⏱ Timeout on attempt {attempt}/{max_retries}. "
-                f"Retry in {backoff:.1f}s...",
-                file=sys.stderr,
-            )
+                raise TimeoutError(f"Timeout after {max_retries} attempts.")
             time.sleep(backoff)
             backoff *= 2
             continue
 
-        # ---- Anything else ----
-        print(f"✗ Unexpected HTTP {r.status_code}: {r.text}", file=sys.stderr)
-        raise SessionLost(f"http_{r.status_code}")
+        # ─── Anything else ─────────────────────────────────────
+        raise RuntimeError(f"Unexpected HTTP {r.status_code}: {r.text}")
 
 
-# =====================================================================
+# ─────────────────────────────────────────────────────────────────────
 # Session helpers
-# =====================================================================
+# ─────────────────────────────────────────────────────────────────────
 
-def _start_new_chat(api_key: str, restore: bool) -> None:
+def _new_chat(restore=False):
     """
     POST /v1/chat/new.
 
-    restore=False: fresh chat. RAG index cleared. Use after 409.
-    restore=True:  reopen last chat. RAG index preserved. Use only when
-                   you explicitly want the previous chat back.
+    restore=False — fresh chat, RAG index cleared. Use after 409.
+    restore=True  — reopen the last chat, RAG index preserved.
     """
     r = requests.post(
         f"{BASE_URL}/v1/chat/new",
         headers={
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json",
         },
         json={"restore": restore},
         timeout=120,
     )
-
     if r.status_code == 200:
-        mode = "restore" if restore else "fresh"
-        print(f"  → New chat ({mode}).")
-        return
-
-    if r.status_code == 409:
+        print(f"  → New chat ({'restore' if restore else 'fresh'}).")
+    elif r.status_code == 409:
         err = r.json().get("error", {})
-        print(f"  ⚠ Restore failed: {err.get('reason')}", file=sys.stderr)
-        print(f"    {err.get('message')}", file=sys.stderr)
-        print(f"    state_cleared: {err.get('state_cleared')}", file=sys.stderr)
-        # If restore failed, do a fresh start so the next request has a
-        # valid session.
-        _start_new_chat(api_key, restore=False)
-        return
-
-    print(f"  ✗ /v1/chat/new failed: HTTP {r.status_code}", file=sys.stderr)
+        print(
+            f"  ⚠ Restore failed: {err.get('reason')} — falling back to fresh.",
+            file=sys.stderr,
+        )
+        _new_chat(restore=False)
+    else:
+        print(f"  ✗ /v1/chat/new failed: HTTP {r.status_code}", file=sys.stderr)
 
 
-def get_context_status(api_key: str) -> dict:
-    """
-    GET /v1/context/status — cheap health check.
-
-    Returns:
-        { totalChars, maxChars, percent, snapshot70Done, snapshot90Done }
-    """
+def _context_status():
+    """GET /v1/context/status — cheap health check."""
     r = requests.get(
         f"{BASE_URL}/v1/context/status",
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers={"Authorization": f"Bearer {API_KEY}"},
         timeout=10,
     )
-    r.raise_for_status()
     return r.json()
 
 
-# =====================================================================
-# 1. Monitor context_status
-# =====================================================================
-
-def example_monitor(api_key: str) -> None:
-    """
-    Send a short message and watch context_status grow.
-
-    In a real client, you would log every change of `warning`:
-        null → context_above_70 → context_near_limit
-    and prepare for the transition when it crosses 70%.
-    """
-    section("Example 1: monitor context_status")
-
-    before = get_context_status(api_key)
-    print(f"  before: {before['totalChars']:,} / {before['maxChars']:,} "
-          f"({before['percent']}%)")
-
-    messages = [{"role": "user", "content": "Say one word: OK."}]
-    send_message(api_key, messages)
-
-    after = get_context_status(api_key)
-    print(f"  after:  {after['totalChars']:,} / {after['maxChars']:,} "
-          f"({after['percent']}%)")
-
-
-# =====================================================================
-# 2. Simulating a 409
-# =====================================================================
-
-def example_handle_409(api_key: str) -> None:
-    """
-    We cannot force a real 409 without filling the context, but the
-    error path in send_message() is the one used in production. This
-    example demonstrates the /v1/chat/new call directly.
-
-    In a real scenario:
-      1. A normal request returns 409 with error.type=context_exhausted.
-      2. send_message() catches it, prints the recovery info,
-         calls _start_new_chat(restore=False), and retries.
-      3. The retry succeeds because the new chat has an empty context.
-    """
-    section("Example 2: recover after context exhaustion")
-
-    print("  Forcing a fresh chat (as if 409 had just been returned)...")
-    _start_new_chat(api_key, restore=False)
-
-    # Retry the original request. It now runs in the new chat.
-    messages = [{"role": "user", "content": "We started over. Acknowledge."}]
-    send_message(api_key, messages)
-
-
-# =====================================================================
-# 3. Restore vs fresh
-# =====================================================================
-
-def example_restore_vs_fresh(api_key: str) -> None:
-    """
-    /v1/chat/new has two modes:
-
-      restore=False → new chat, RAG index cleared. Start a fresh topic.
-      restore=True  → reopen last chat, RAG index preserved. Continue
-                       the previous topic.
-
-    If restore=True fails (chat not found, no last id), the server
-    returns 409 with error.type=restore_failed and clears the state.
-    A fresh start is the only recovery.
-    """
-    section("Example 3: restore vs fresh")
-
-    print("  → fresh chat")
-    _start_new_chat(api_key, restore=False)
-    send_message(api_key, [{"role": "user", "content": "Say: fresh."}])
-
-    print("\n  → restore last chat")
-    _start_new_chat(api_key, restore=True)
-    send_message(api_key, [{"role": "user", "content": "Say: restored."}])
-
-
-# =====================================================================
-# 4. Degradation of quality — what to expect
-# =====================================================================
-
-def example_graceful_degradation(api_key: str) -> None:
-    """
-    After a transition, the model does NOT remember everything.
-    Snapshot and RAG transfer only a fraction of the old context.
-
-    Practical consequence: keep critical facts in the system message,
-    not in the conversation history. The system message is resent on
-    every request and survives every transition.
-    """
-    section("Example 4: degradation and the system message")
-
-    system = (
-        "Context that must survive any transition:\n"
-        "  Project: DeepSeek Automation API.\n"
-        "  Maintainer: Alice.\n"
-        "  Deadline: 2026-10-01.\n"
-        "Refer to these facts in every answer."
-    )
-
-    # Fresh chat — as if we just transitioned.
-    _start_new_chat(api_key, restore=False)
-
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": "Who is the maintainer?"},
-    ]
-    data = send_message(api_key, messages)
-    print(f"  Answer includes 'Alice'? "
-          f"{'Alice' in data['choices'][0]['message']['content']}")
-
-
-# =====================================================================
-# 5. Temporary chat (/v1/chat/single)
-# =====================================================================
-
-def example_single(api_key: str) -> None:
-    """
-    POST /v1/chat/single — run a request in a temporary chat.
-
-    The main session is not touched: whatever you say in the temporary
-    chat does not enter the main context, does not increase totalChars,
-    and does not trigger snapshots or transitions.
-
-    Optional flags:
-      insert_to_context=true — append the answer to the main chat as a
-                               System message.
-      return_only=true       — return only {"answer": "..."}.
-    """
-    section("Example 5: temporary chat (/v1/chat/single)")
-
-    messages_json = '[{"role":"user","content":"Answer briefly: what is 2+2?"}]'
-
-    r = requests.post(
-        f"{BASE_URL}/v1/chat/single",
-        headers={"Authorization": f"Bearer {api_key}"},
-        files={"messages": (None, messages_json)},
-        timeout=180,
-    )
-
-    if r.status_code != 200:
-        print(f"✗ HTTP {r.status_code}: {r.text}", file=sys.stderr)
+def _print_context_status(data):
+    """Print the context_status block from a chat response."""
+    status = data.get("context_status")
+    if not status:
         return
-
-    data = r.json()
-    print(f"✓ {data.get('answer', '')[:120]}")
-    print(f"  inserted into main context: {data.get('inserted')}")
-
-
-# =====================================================================
-# Main
-# =====================================================================
-
-def main() -> None:
-    banner("05 — Session management and error handling")
-    api_key = load_or_register_key()
-
-    try:
-        example_monitor(api_key)
-        example_handle_409(api_key)
-        example_restore_vs_fresh(api_key)
-        example_graceful_degradation(api_key)
-        example_single(api_key)
-    except SessionLost as e:
-        print(f"\n✗ Session lost: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    banner("Done.")
+    used = status["chars_used"]
+    limit = status["chars_limit"]
+    pct = status["percent_used"]
+    print(f"  context: {used:,} / {limit:,} chars ({pct}%)")
+    if status.get("warning"):
+        print(f"  ⚠ {status['warning']} → {status['recommendation']}")
 
 
-if __name__ == "__main__":
-    main()
+# ─────────────────────────────────────────────────────────────────────
+# Demo
+# ─────────────────────────────────────────────────────────────────────
+
+# Baseline: where are we?
+print("Before:", _context_status())
+# → {"totalChars": 0, "maxChars": 2400000, "percent": 0, ...}
+
+# A normal request. chat() handles the happy path and prints
+# context_status for you.
+chat([{"role": "user", "content": "Say one word: ready."}])
+# → context: 28 / 2,400,000 chars (0%)
+
+# Force a fresh chat, as if a 409 had just been returned. In a real
+# client this happens automatically inside chat() — the call here is
+# only so the demo shows the flow.
+_new_chat(restore=False)
+
+# Send the same request in the new chat. It should succeed.
+chat([{"role": "user", "content": "Say one word: fresh."}])
+
+
+# ─────────────────────────────────────────────────────────────────────
+# A note on the system message
+# ─────────────────────────────────────────────────────────────────────
+#
+# After a transition, the model does NOT remember everything. Even
+# with both Snapshot and RAG enabled, it treats the transferred
+# content as a document.
+#
+# The system message is different: it is resent on every request and
+# survives every transition. Put facts that must persist there, not
+# in the conversation history.
+
+chat([
+    {"role": "system", "content":
+        "Reference facts for this session:\n"
+        "  Maintainer: Alice\n"
+        "  Deadline: 2026-10-01\n"
+        "Refer to these in every answer."},
+    {"role": "user", "content": "Who is the maintainer?"},
+])
+# The answer includes "Alice" — the system message survives any chat
+# switch.
+#
+# Full protocol: docs/guides/session-management.md
