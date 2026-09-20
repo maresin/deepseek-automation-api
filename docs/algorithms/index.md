@@ -39,6 +39,7 @@
 | B5 | Детект баннера длины | active | [response.md](response.md#b5) |
 | B6 | Детект плашки Server Busy | active | [response.md](response.md#b6) |
 | B7 | Обработка Server Busy → shutdown | active | [response.md](response.md#b7) |
+| B8 | Извлечение tool_calls из ответа модели | active | [response.md](response.md#b8) |
 
 ### Управление контекстом
 

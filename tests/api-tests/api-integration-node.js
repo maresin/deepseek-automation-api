@@ -378,6 +378,73 @@ async function runTests() {
         logResult('B.6 arguments mention Paris', false, 'no tool_calls');
     }
 
+    console.log('\n[B.7] Complex tool schema (array of objects)');
+    const b7Tools = [{
+        type: 'function',
+        function: {
+            name: 'write_files',
+            description: 'Write an array of files',
+            parameters: {
+                type: 'object',
+                properties: {
+                    files: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                path: { type: 'string' },
+                                content: { type: 'string' },
+                            },
+                            required: ['path', 'content'],
+                        },
+                    },
+                },
+                required: ['files'],
+            },
+        },
+    }];
+    const b7 = await chat(
+        [{ role: 'user', content: 'Write two files: a.txt with "hello" and b.txt with "world".' }],
+        {},
+        b7Tools
+    );
+    const b7Choice = b7.data?.choices?.[0];
+    const b7Msg = b7Choice?.message;
+    const b7Tc = b7Msg?.tool_calls;
+
+    logResult('B.7 tool_calls present',
+        Array.isArray(b7Tc) && b7Tc.length > 0,
+        Array.isArray(b7Tc) ? `${b7Tc.length} call(s)` : 'none');
+    logResult('B.7 content is null',
+        b7Msg?.content === null,
+        `content=${JSON.stringify(b7Msg?.content)?.substring(0, 40)}`);
+    logResult('B.7 finish_reason = tool_calls',
+        b7Choice?.finish_reason === 'tool_calls',
+        `finish_reason=${b7Choice?.finish_reason}`);
+
+    if (Array.isArray(b7Tc) && b7Tc.length > 0) {
+        const fn = b7Tc[0].function;
+        logResult('B.7 function.name = write_files',
+            fn?.name === 'write_files',
+            `name=${fn?.name}`);
+        logResult('B.7 arguments is a JSON string',
+            typeof fn?.arguments === 'string',
+            `typeof=${typeof fn?.arguments}`);
+
+        try {
+            const args = JSON.parse(fn.arguments);
+            logResult('B.7 arguments.files is a non-empty array',
+                Array.isArray(args.files) && args.files.length >= 1,
+                `files.length=${args.files?.length}`);
+            logResult('B.7 files[0] has path and content',
+                typeof args.files?.[0]?.path === 'string' &&
+                typeof args.files?.[0]?.content === 'string',
+                `path=${args.files?.[0]?.path}, content=${args.files?.[0]?.content}`);
+        } catch (e) {
+            logResult('B.7 arguments parses as JSON', false, e.message);
+        }
+    }
+
     // ============================================================
     // BLOCK C — FILES
     // ============================================================

@@ -97,6 +97,109 @@ function isSafePath(filePath) {
 }
 
 // ============================================================
+// RESPONSE PARSING (tool_calls extraction)
+// ============================================================
+
+/**
+ * Remove a leading/trailing markdown code fence from text.
+ * Handles ```json, ```javascript, ```js, and bare ```.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function stripMarkdownFences(text) {
+    return text
+        .replace(/^\s*```(?:json|javascript|js)?\s*\n?/i, '')
+        .replace(/\n?\s*```\s*$/i, '')
+        .trim();
+}
+
+/**
+ * Extract the first complete top-level JSON object from text.
+ *
+ * Walks character by character, tracking:
+ *   - brace depth (only `{` / `}` outside strings count)
+ *   - string state (to skip `{` / `}` inside string literals)
+ *   - escape state (to handle `\"` correctly)
+ *
+ * The naive alternative — a `\{.*\}` regex — fails on any JSON that
+ * contains a `}` inside a string value. Tool-call arguments frequently
+ * contain code (`if (x) { return 1; }`), so regex truncation is not
+ * hypothetical. Brace balancing handles it correctly.
+ *
+ * Returns the parsed object, or null if no balanced JSON object is found.
+ * Callers must try strict JSON.parse first; this is the fallback path.
+ *
+ * @param {string} text
+ * @returns {object|null}
+ */
+function extractBalancedJson(text) {
+    const start = text.indexOf('{');
+    if (start === -1) return null;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+
+        if (escape) { escape = false; continue; }
+        if (ch === '\\') { escape = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+
+        if (ch === '{') {
+            depth++;
+        } else if (ch === '}') {
+            depth--;
+            if (depth === 0) {
+                const slice = text.substring(start, i + 1);
+                try { return JSON.parse(slice); }
+                catch { return null; }
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Normalize one tool_call entry into the OpenAI shape.
+ *
+ * The model may return either:
+ *   - Flat:    { name, arguments }
+ *   - Nested:  { function: { name, arguments } }
+ *
+ * `arguments` may be an object or a JSON string. A valid JSON string is
+ * passed through verbatim; stringifying it again would produce a double-
+ * encoded value that breaks clients expecting a single JSON.parse call.
+ *
+ * @param {object} tc     - Raw tool_call from the model.
+ * @param {number} index  - Position in the array, used for id generation.
+ * @returns {{ id: string, type: 'function', function: { name: string, arguments: string } }}
+ */
+function normalizeToolCall(tc, index) {
+    const inner = tc.function && typeof tc.function === 'object' ? tc.function : tc;
+    const name = inner.name;
+    const rawArgs = inner.arguments;
+
+    let argsString;
+    if (typeof rawArgs === 'string') {
+        // If it is already valid JSON, pass it through verbatim.
+        try { JSON.parse(rawArgs); argsString = rawArgs; }
+        catch { argsString = JSON.stringify(rawArgs); }
+    } else {
+        argsString = JSON.stringify(rawArgs ?? {});
+    }
+
+    return {
+        id: tc.id || `call_${Date.now()}_${index}`,
+        type: 'function',
+        function: { name, arguments: argsString },
+    };
+}
+
+// ============================================================
 // VALIDATION
 // ============================================================
 
@@ -519,21 +622,48 @@ async function handleChatRoute(req, res) {
     // --------------------------------------------------------
     // 10. RESPONSE
     // --------------------------------------------------------
-    let parsedResponse, isToolCall = false;
+    //
+    // DeepSeek Web is a text interface: the model has no native
+    // tool-calling channel. It may wrap its tool_calls JSON in
+    // markdown fences or add conversational preamble. Three-stage
+    // extraction:
+    //
+    //   1. Strict JSON.parse — covers the common case, zero overhead.
+    //   2. Balanced-brace extraction from the raw text — handles
+    //      fences, preamble, and code inside string values.
+    //   3. Give up — treat the whole response as plain content.
+    //
+    // See algorithm B8 in docs/algorithms/response.md.
+    //
+    let parsedResponse = null;
     try {
         parsedResponse = JSON.parse(result);
-        if (parsedResponse.tool_calls?.length) isToolCall = true;
-    } catch (e) {
+    } catch { /* continue to fallback */ }
+
+    if (!parsedResponse) {
+        const cleaned = stripMarkdownFences(result);
+        parsedResponse = extractBalancedJson(cleaned);
+    }
+
+    let isToolCall = false;
+    if (parsedResponse?.tool_calls?.length) {
+        isToolCall = true;
+    } else {
+        // The model may have emitted a tool_calls marker without
+        // producing anything the parser could extract. Log the raw
+        // preview so the pattern is visible in production logs.
+        if (result.includes('"tool_calls"')) {
+            console.warn(
+                `⚠️ tool_calls marker present but not parsed. ` +
+                `preview: ${result.substring(0, 200)}`
+            );
+        }
         parsedResponse = { content: result };
     }
 
     let openaiResponse;
     if (isToolCall) {
-        const toolCalls = parsedResponse.tool_calls.map((tc, i) => ({
-            id: `call_${Date.now()}_${i}`,
-            type: 'function',
-            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
-        }));
+        const toolCalls = parsedResponse.tool_calls.map(normalizeToolCall);
         openaiResponse = {
             id: `chatcmpl-${Date.now()}`,
             object: 'chat.completion',
