@@ -2,40 +2,41 @@
 
 ## Обзор
 
-Три группы тестов:
+Четыре набора тестов, четыре файла в `tests/`:
 
-1. **Селекторы** (`tests/selector-tests/`) — проверка UI-селекторов
-   против живого DeepSeek.
-2. **API-интеграция** (`tests/api-tests/api-integration-node.js`) —
-   контракт HTTP API.
-3. **Перенос контекста** (`tests/api-tests/api-integration-rag.js`) —
-   snapshot- и RAG-сценарии, включая реальный переход в новый чат.
+| Файл | Что тестирует | Внешние зависимости |
+|---|---|---|
+| `api.test.js` | HTTP-контракт API | Запущенный сервер на порту 3000 |
+| `context-transfer.test.js` | Snapshot и RAG переходы | Свободный порт 3000 (спавнит свой сервер) |
+| `selectors.test.js` | UI-селекторы DeepSeek | Chromium и `state.json` |
+| `response-parser.test.js` | Парсеры ответов модели | Нет |
 
-## Тесты селекторов
+## Unit-тесты (`response-parser.test.js`)
 
-Запускаются **без** сервера. Открывают Chromium через Playwright,
-идут на `chat.deepseek.com`, проверяют каждый селектор из
-`Selectors.ts`.
+Самые быстрые — миллисекунды. Не требуют ни сервера, ни браузера,
+ни сети.
 
 ```bash
-npm run test:selectors
+npm run test:unit
 ```
 
-**Когда запускать:** после изменений в `src/browser/Selectors.ts` или
-после любых подозрений на изменение UI DeepSeek.
+Покрывают:
+- Извлечение JSON из markdown-обёрток и преамбулы.
+- Балансировку скобок с учётом строк и escape-последовательностей.
+- Нормализацию плоского и вложенного форматов `tool_calls`.
+- Восстановление обрезанного JSON (без mid-string).
+- Полный цикл `parseResponse` на фикстуре
+  `tests/data/truncated-write_files.json`.
+- Фикстура генерируется программно из валидного JSON:
+`node tests/data/make-fixture.cjs`. Скрипт создаёт структуру и
+обрезает её ровно на два символа (`]}` верхнего уровня) — это
+воспроизводит наблюдаемый сбой без риска испортить данные при
+копировании из реального ответа модели.
 
-**Опции:**
-```bash
-# Показать браузер (по умолчанию headless)
-SELECTOR_TEST_HEADLESS=false npm run test:selectors
+**Когда запускать:** после любой правки
+`server-modules/response-parser.js`.
 
-# Отключить overlay
-SELECTOR_TEST_OVERLAY=false npm run test:selectors
-```
-
-**Требования:** `state.json` (cookies). Сервер запускать не нужно.
-
-## API-тесты
+## API-тесты (`api.test.js`)
 
 Запускаются **при работающем сервере**.
 
@@ -49,17 +50,18 @@ npm run test:api
 
 Проверяют:
 - `/v1/register`, `/v1/chat/new`, `/v1/context/status`.
-- `/v1/chat/completions` (plain, system, multi-turn).
-- Tool calling.
+- `/v1/chat/completions` — plain, system, multi-turn.
+- Tool calling: простая схема (`echo`) и сложная (`write_files`
+  с массивом объектов).
 - `extra_body.deepthink`, `extra_body.web_search`.
-- Upload одиночный и множественный, `file_id` reference, SVG-картинка.
-- Валидацию: 401, 400 (пустой messages, неизвестная роль, невалидный
-  tools, несуществующий file_id).
+- Upload: одиночный, множественный, `file_id` reference, SVG-картинка.
+- Валидацию: 401, 400 (пустой `messages`, неизвестная роль,
+  невалидный `tools`, несуществующий `file_id`).
 - `/v1/chat/single` (`return_only`, `insert_to_context`).
 
 **Требования:** `tests/config.env`, `tests/data/images/lenna.png`.
 
-## RAG / snapshot тесты
+## Context-transfer тесты (`context-transfer.test.js`)
 
 Проверяют **перенос контекста** между чатами — то, что нельзя
 проверить без реального переполнения.
@@ -68,8 +70,9 @@ npm run test:api
 npm run test:rag
 ```
 
-Тест запускает собственный экземпляр сервера дважды: один раз с
+Тест спавнит собственный экземпляр сервера дважды: один раз с
 `ENABLE_SNAPSHOT=true`, второй — с `ENABLE_RAG=true`. Каждый раз:
+
 1. Открывает новый чат.
 2. Загружает четыре маркерных файла, пересекая пороги 70% и 90%.
 3. Отправляет тривиальное сообщение → срабатывает `handleOverflow`.
@@ -80,6 +83,31 @@ npm run test:rag
 
 **Требования:** `.api-key` должен существовать. Другой экземпляр
 сервера на том же порту должен быть остановлен.
+
+## Тесты селекторов (`selectors.test.js`)
+
+Запускаются **без** API-сервера. Открывают Chromium через Playwright,
+идут на `chat.deepseek.com`, проверяют каждый селектор из
+`Selectors.ts`.
+
+```bash
+npm run test:selectors
+```
+
+**Когда запускать:** после изменений в `src/browser/Selectors.ts` или
+после любых подозрений на изменение UI DeepSeek.
+
+**Опции:**
+
+```bash
+# Показать браузер (по умолчанию headless)
+SELECTOR_TEST_HEADLESS=false npm run test:selectors
+
+# Отключить overlay
+SELECTOR_TEST_OVERLAY=false npm run test:selectors
+```
+
+**Требования:** `state.json` (cookies).
 
 ## Отладка
 
@@ -129,6 +157,7 @@ curl http://localhost:3000/health    # connection refused
 ### API возвращает 503
 
 Клиент не готов. Проверьте:
+
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/v1/context/status -H "Authorization: Bearer $KEY"
@@ -137,6 +166,7 @@ curl http://localhost:3000/v1/context/status -H "Authorization: Bearer $KEY"
 ### API возвращает 409
 
 Контекст исчерпан. Это ожидаемо для длинных тестов:
+
 ```bash
 curl -X POST http://localhost:3000/v1/chat/new \
   -H "Authorization: Bearer $KEY" \
@@ -150,6 +180,7 @@ ls browsers/chromium-*/
 ```
 
 Если пусто:
+
 ```bash
 PLAYWRIGHT_BROWSERS_PATH=./browsers npx playwright install chromium
 ```
@@ -158,10 +189,14 @@ PLAYWRIGHT_BROWSERS_PATH=./browsers npx playwright install chromium
 
 - Cloudflare / captcha — только вручную.
 - Реальные ошибки DeepSeek Server Busy — воспроизводятся редко.
-- Внешние RAG-сценарии с файлами > 10 МБ (требуют времени).
+- Внешние RAG-сценарии с файлами > 10 МБ — требуют времени.
 
 Эти сценарии проверяются вручную, см.
 [диагностику](troubleshooting.md).
 
-См. [алгоритмы](../algorithms/index.md) и
-[управление сессией](session-management.md).
+## Связанные разделы
+
+- [Алгоритмы](../algorithms/index.md) — контрактные описания.
+- [Управление сессией](session-management.md) — два лимита,
+  деградация, обработка ошибок.
+- [Диагностика](troubleshooting.md) — частые проблемы.

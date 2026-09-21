@@ -24,10 +24,10 @@ import { chromium } from 'playwright-core';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Selectors } from '../../dist/browser/Selectors.js';
+import { Selectors } from '../dist/browser/Selectors.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+const PROJECT_ROOT = path.resolve(__dirname, '..');
 const STATE_PATH = path.join(PROJECT_ROOT, 'state.json');
 
 const SHOW_OVERLAY = process.env.SELECTOR_TEST_OVERLAY !== 'false';
@@ -304,7 +304,7 @@ async function run() {
         process.exit(1);
     }
 
-    const pathsMod = await import('../../dist/utils/paths.js');
+    const pathsMod = await import('../dist/utils/paths.js');
     const browser = await chromium.launch({
         headless: HEADLESS,
         executablePath: pathsMod.getChromiumExecutablePath(),

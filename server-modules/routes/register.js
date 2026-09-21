@@ -15,7 +15,6 @@ const {
     generateApiKey,
     deleteSessionFiles,
     bothFilesExist,
-    getSystemPrompt,
 } = require('../utils');
 const { setClientAndScheduler, isReady } = require('../state');
 const { DeepSeekClient } = require('../../dist');
@@ -31,8 +30,7 @@ module.exports = async function registerRoute(req, res) {
     if (!bothFilesExist()) deleteSessionFiles();
 
     const apiKey = generateApiKey();
-    const systemPrompt = getSystemPrompt();
-    const config = getClientConfig({ email, password, systemPrompt });
+    const config = getClientConfig({ email, password });
     const newClient = new DeepSeekClient(config);
 
     // Assign the api key before initialize() so that startFresh() can clear

@@ -27,6 +27,33 @@ export function getBrowsersPath(): string {
 }
 
 /**
+ * Absolute path to the uploads directory.
+ *
+ * Configurable via DEEPSEEK_UPLOAD_DIR. Defaults to ./uploads in the
+ * project root. The directory is created on first access if it does
+ * not already exist.
+ *
+ * Callers should use this instead of hardcoding path.join(cwd, 'uploads').
+ * The directory stores:
+ *   - multipart uploads from /v1/chat/completions and /v1/files
+ *   - the context snapshot (snapshot.txt)
+ *   - RAG context files (rag_context_*.txt)
+ *
+ * @returns Absolute path to the uploads directory.
+ */
+export function getUploadsDir(): string {
+    const dir = process.env.DEEPSEEK_UPLOAD_DIR
+        ? path.resolve(process.env.DEEPSEEK_UPLOAD_DIR)
+        : path.join(process.cwd(), 'uploads');
+
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+
+    return dir;
+}
+
+/**
  * Locate the Chromium executable inside ./browsers.
  *
  * The directory name starts with "chromium-" and its content layout

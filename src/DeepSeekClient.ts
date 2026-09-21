@@ -29,6 +29,7 @@ import { Selectors } from './browser/Selectors.js';
 import { TaskQueue } from './task/TaskQueue.js';
 import { isImageFile } from './utils/fileUtils.js';
 import { loadPrompt } from './utils/prompts.js';
+import { getUploadsDir } from './utils/paths.js';
 import { ContextExhaustedError, RestoreResult, ServerBusyError } from './types.js';
 
 export class DeepSeekClient {
@@ -76,7 +77,6 @@ export class DeepSeekClient {
 
     isChatStarted(): boolean { return this.chatStarted; }
     setChatStarted(value: boolean): void { this.chatStarted = value; }
-    getSystemPromptText(): string | null { return this.config.systemPrompt || null; }
 
     // ============================================================
     // SYSTEM PROMPTS MANAGEMENT
@@ -314,12 +314,7 @@ export class DeepSeekClient {
             console.log(`   📤 uploading snapshot: ${path.basename(snapshotPath)}`);
 
             const uploadPrompt = loadPrompt('snapshot_upload_prompt.txt', {
-                fallback:
-                    'The attached file is an authoritative context snapshot from our previous ' +
-                    'session. Register it as a trusted source document for the rest of this ' +
-                    'conversation. Any question about our earlier discussion must be answered ' +
-                    "from this file's contents, not from assumptions or general knowledge. " +
-                    'Reply with "OK" to confirm.',
+                required: true,
             });
 
             await this.executePipeline({
@@ -477,7 +472,7 @@ export class DeepSeekClient {
 
     async cleanup(): Promise<void> {
         console.log('🧹 Cleaning up temporary files and context data...');
-        const uploadsDir = path.join(process.cwd(), 'uploads');
+        const uploadsDir = getUploadsDir();
         if (fs.existsSync(uploadsDir)) {
             for (const file of fs.readdirSync(uploadsDir)) {
                 try { fs.unlinkSync(path.join(uploadsDir, file)); } catch { /* ignore */ }

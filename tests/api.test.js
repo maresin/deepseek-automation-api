@@ -17,15 +17,15 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+const PROJECT_ROOT = path.resolve(__dirname, '..');
 const CHAT_STATE_FILE = path.join(PROJECT_ROOT, 'chat_state.json');
-const TMP_DIR = path.join(__dirname, '..', 'tmp');
+const TMP_DIR = path.join(__dirname, 'tmp');
 
 // ============================================================
 // CONFIGURATION
 // ============================================================
 
-const configPath = path.join(__dirname, '..', 'config.env');
+const configPath = path.join(__dirname, 'config.env');
 const config = fs.existsSync(configPath)
     ? fs.readFileSync(configPath, 'utf-8')
         .split('\n')
@@ -38,7 +38,7 @@ const config = fs.existsSync(configPath)
     : {};
 
 const SERVER_URL = config.SERVER_URL || 'http://localhost:3000';
-const TEST_DATA_DIR = path.join(__dirname, '..', config.TEST_DATA_DIR || './data');
+const TEST_DATA_DIR = path.join(__dirname, config.TEST_DATA_DIR || './data');
 
 let API_KEY = null;
 let TOTAL = 0;

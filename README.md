@@ -130,12 +130,12 @@ a sensible default.
 
 ### Paths
 
-| Variable | Default |
-|---|---|
-| `DEEPSEEK_STATE_PATH` | `./state.json` |
-| `DEEPSEEK_CHAT_STATE_PATH` | `./chat_state.json` |
-| `DEEPSEEK_API_KEY_PATH` | `./.api-key` |
-| `DEEPSEEK_SYSTEM_PROMPT_PATH` | `./prompts/system_prompt.txt` |
+| Variable | Default | Description |
+|---|---|---|
+| `DEEPSEEK_STATE_PATH` | `./state.json` | Browser cookies and origins |
+| `DEEPSEEK_CHAT_STATE_PATH` | `./chat_state.json` | Chat session state |
+| `DEEPSEEK_API_KEY_PATH` | `./.api-key` | API key storage |
+| `DEEPSEEK_UPLOAD_DIR` | `./uploads` | Multipart uploads, snapshots, RAG context |
 
 ### Context and RAG tuning
 
@@ -464,23 +464,24 @@ what to do when a chat transitions and quality drops. Full discussion:
 
 ## Testing
 
-Three independent test suites.
+Four independent test suites. Each file in `tests/` covers one aspect.
 
-### Selector tests
+### Unit tests
 
-Validate every UI selector against the live DeepSeek interface. Run
-after any change to `src/browser/Selectors.ts` or after a suspected UI
-change. Do not require a running API server.
+Fastest — milliseconds, no server, no browser. Cover the response
+parser: markdown fences, preamble, brace balancing, truncation repair,
+tool_call normalization.
 
 ```bash
-npm run test:selectors
+npm run test:unit
 ```
 
 ### API integration tests
 
-Verify the HTTP contract: registration, chat completions, tool calling,
-file uploads (single, multiple, image, `file_id`), request validation
-(401 / 400), context status, temporary chat.
+Verify the HTTP contract: registration, chat completions, tool calling
+(simple and complex schemas), file uploads (single, multiple, image,
+`file_id`), request validation (401 / 400), context status, temporary
+chat.
 
 **Requires a running server** on port 3000:
 
@@ -502,6 +503,16 @@ persistence across restarts.
 ```bash
 pkill -f "node server.js"    # if a server is running
 npm run test:rag
+```
+
+### Selector tests
+
+Validate every UI selector against the live DeepSeek interface. Run
+after any change to `src/browser/Selectors.ts` or after a suspected UI
+change. Do not require a running API server.
+
+```bash
+npm run test:selectors
 ```
 
 ### Port conflicts

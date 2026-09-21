@@ -1,7 +1,6 @@
 // server-modules/utils.js
 const fs = require('fs');
 const path = require('path');
-const { loadPrompt } = require('../dist/utils/prompts.js')
 require('dotenv').config();
 
 const API_KEY_FILE = process.env.DEEPSEEK_API_KEY_PATH || path.join(__dirname, '..', '.api-key');
@@ -59,16 +58,6 @@ function bothFilesExist() {
 }
 
 /**
- * Read the system prompt from disk.
- * @throws {Error} If the system prompt file does not exist.
- * @returns {string} Contents of the system prompt file.
- */
-function getSystemPrompt() {
-    const pathOrName = process.env.DEEPSEEK_SYSTEM_PROMPT_PATH || 'system_prompt.txt';
-    return loadPrompt(pathOrName, { required: true });
-}
-
-/**
  * Build the prompt text sent to DeepSeek from a messages array.
  *
  * Role prefixes (`System:`, `User:`, `Assistant:`) are added when the
@@ -112,8 +101,11 @@ function buildPrompt(messages, tools) {
 
     let toolsText = '';
     if (tools && tools.length) {
-        toolsText = `\n\nTools available (JSON):\n${JSON.stringify(tools, null, 2)}\n\n` +
-                    `When you need to use a tool, respond with ONLY JSON: {"tool_calls": [{"name": "...", "arguments": {...}}]}\n\n`;
+        // Only the current tool schema goes here. The format instructions
+        // (pretty-printed JSON, no markdown fences, etc.) live in
+        // prompts/tools_prompt.txt and are sent once per session by
+        // SendUserMessageTask.ensureToolsPrompt.
+        toolsText = `\n\nTools available (JSON):\n${JSON.stringify(tools, null, 2)}\n\n`;
     }
 
     return toolsText + conversationText;
@@ -125,6 +117,5 @@ module.exports = {
     saveApiKey,
     deleteSessionFiles,
     bothFilesExist,
-    getSystemPrompt,
     buildPrompt
 };

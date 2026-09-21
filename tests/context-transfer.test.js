@@ -41,13 +41,13 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+const PROJECT_ROOT = path.resolve(__dirname, '..');
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3000';
 const API_KEY_FILE = path.join(PROJECT_ROOT, '.api-key');
 const CHAT_STATE_FILE = path.join(PROJECT_ROOT, 'chat_state.json');
 const SNAPSHOT_FILE = path.join(PROJECT_ROOT, 'uploads', 'snapshot.txt');
 const RAG_DATA_DIR = path.join(PROJECT_ROOT, 'rag_data');
-const TMP_DIR = path.join(__dirname, '..', 'tmp');
+const TMP_DIR = path.join(__dirname, 'tmp');
 const CONTEXT_LIMIT = '50000';
 
 let SERVER_PROC = null;

@@ -12,6 +12,7 @@
 const path = require('path');
 const fs = require('fs');
 const { isSupportedByDeepSeek } = require('../../dist/utils/fileUtils.js');
+const { getUploadsDir } = require('../../dist/utils/paths.js');
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 
@@ -75,9 +76,7 @@ async function uploadFile(req, res) {
     }
 
     const fileId = generateFileId();
-    const uploadDir = path.join(process.cwd(), 'uploads');
-    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
+    const uploadDir = getUploadsDir();
     const fileNameWithExt = fileId + ext;
     const filePath = path.join(uploadDir, fileNameWithExt);
     fs.renameSync(file.path, filePath);

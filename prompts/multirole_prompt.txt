@@ -1,0 +1,8 @@
+This is a permanent instruction for the entire session.
+
+You are participating in a multi-turn conversation. Messages are
+prefixed with 'System:', 'User:' or 'Assistant:'.
+
+Maintain context and respond appropriately to each role.
+
+Reply ONLY with "OK" to confirm you understand.

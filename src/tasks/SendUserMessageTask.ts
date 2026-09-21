@@ -9,11 +9,16 @@
  * enqueues them into the background IndexingQueue once the chatId is
  * known. This keeps the request-response cycle short even for large
  * files, whose embedding can take minutes.
+ *
+ * Both session-level prompts (tools, multi-role) are loaded from
+ * prompts/ on first use and sent once per session. See the
+ * prompts/ directory for the actual text.
  */
 
 import { Task } from '../task/Task.js';
 import { DeepSeekClient } from '../DeepSeekClient.js';
 import { ContextExhaustedError } from '../types.js';
+import { loadPrompt } from '../utils/prompts.js';
 
 export class SendUserMessageTask extends Task<string> {
     /**
@@ -35,6 +40,10 @@ export class SendUserMessageTask extends Task<string> {
 
     /**
      * Send the tools system prompt once per session, if tools were provided.
+     *
+     * The prompt is loaded from prompts/tools_prompt.txt. It teaches the
+     * model that tools may appear in subsequent messages and that tool
+     * calls must be pretty-printed raw JSON without markdown fences.
      */
     private async ensureToolsPrompt(client: DeepSeekClient, tools: any[]): Promise<void> {
         if (!tools || tools.length === 0) return;
@@ -44,25 +53,27 @@ export class SendUserMessageTask extends Task<string> {
         }
 
         console.log('🔧 Sending tools system prompt...');
-        const toolsPrompt = `This is a permanent instruction for the entire session.
-You are an assistant that can use tools. Tools will be provided in subsequent messages.
-When tools are provided, respond with ONLY JSON:
-{"tool_calls": [{"name": "tool_name", "arguments": {"param": "value"}}]}
-When you don't need tools, respond normally.
-Respond in the same language as the user.
-Reply ONLY with "OK" to confirm you understand.`;
+        const toolsPrompt = loadPrompt('tools_prompt.txt', { required: true });
 
-        const response = await client.executePipeline({ text: toolsPrompt, skipStatsUpdate: true });
+        const response = await client.executePipeline({
+            text: toolsPrompt,
+            skipStatsUpdate: true,
+        });
+
         if (!response || !response.toUpperCase().includes('OK')) {
-            console.warn(`⚠️ Expected "OK" from tools prompt, got: ${(response || '').substring(0, 100)}`);
+            console.warn(
+                `⚠️ Expected "OK" from tools prompt, got: ${(response || '').substring(0, 100)}`
+            );
         }
         client.setSystemPromptSent('tools');
         console.log('✅ Tools prompt sent');
     }
 
     /**
-     * Send the multi-role system prompt once per session, if the conversation
-     * contains more than one role or more than one message.
+     * Send the multi-role system prompt once per session, if the
+     * conversation contains more than one role or more than one message.
+     *
+     * The prompt is loaded from prompts/multirole_prompt.txt.
      */
     private async ensureMultiRolePrompt(client: DeepSeekClient, messages: any[]): Promise<void> {
         const hasSystem = messages.some(m => m.role === 'system');
@@ -76,15 +87,17 @@ Reply ONLY with "OK" to confirm you understand.`;
         }
 
         console.log('💬 Sending multi-role system prompt...');
-        const multiRolePrompt = `This is a permanent instruction for the entire session.
-You are participating in a multi-turn conversation.
-Messages are prefixed with 'System:', 'User:' or 'Assistant:'.
-Maintain context and respond appropriately to each role.
-Reply ONLY with "OK" to confirm you understand.`;
+        const multiRolePrompt = loadPrompt('multirole_prompt.txt', { required: true });
 
-        const response = await client.executePipeline({ text: multiRolePrompt, skipStatsUpdate: true });
+        const response = await client.executePipeline({
+            text: multiRolePrompt,
+            skipStatsUpdate: true,
+        });
+
         if (!response || !response.toUpperCase().includes('OK')) {
-            console.warn(`⚠️ Expected "OK" from multi-role prompt, got: ${(response || '').substring(0, 100)}`);
+            console.warn(
+                `⚠️ Expected "OK" from multi-role prompt, got: ${(response || '').substring(0, 100)}`
+            );
         }
         client.setSystemPromptSent('multiRole');
         console.log('✅ Multi-role prompt sent');

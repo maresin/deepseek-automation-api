@@ -18,6 +18,7 @@
 const path = require('path');
 const fs = require('fs');
 const { getClient } = require('../state');
+const { getUploadsDir } = require('../../dist/utils/paths.js');
 
 module.exports = async function singleRoute(req, res) {
     const client = getClient();
@@ -50,7 +51,7 @@ module.exports = async function singleRoute(req, res) {
     let tempFilePath = null;
     if (file) {
         const ext = path.extname(file.originalname);
-        tempFilePath = path.join(process.cwd(), 'uploads', `${Date.now()}${ext}`);
+        tempFilePath = path.join(getUploadsDir(), `${Date.now()}${ext}`);
         fs.renameSync(file.path, tempFilePath);
     }
 

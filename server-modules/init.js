@@ -12,7 +12,7 @@
  * or not requested) can clear the correct RAG index.
  */
 
-const { bothFilesExist, getApiKey, getSystemPrompt } = require('./utils');
+const { bothFilesExist, getApiKey } = require('./utils');
 const { setClientAndScheduler } = require('./state');
 const { DeepSeekClient } = require('../dist');
 const { getClientConfig } = require('./clientConfig');
@@ -23,8 +23,7 @@ async function initFromExistingFiles() {
     console.log('📂 Found existing session files. Attempting to restore...');
 
     const apiKey = getApiKey();
-    const systemPrompt = getSystemPrompt();
-    const config = getClientConfig({ systemPrompt });
+    const config = getClientConfig();
     const newClient = new DeepSeekClient(config);
 
     // Assign the api key before initialize() so that startFresh() can clear

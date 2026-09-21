@@ -20,6 +20,7 @@ import fs from 'fs';
 import path from 'path';
 import { DeepSeekClient } from '../DeepSeekClient.js';
 import { loadPrompt } from '../utils/prompts.js';
+import { getUploadsDir } from '../utils/paths.js';
 
 export class ContextManager {
     private client: DeepSeekClient;
@@ -241,8 +242,7 @@ export class ContextManager {
 
         this.isCreatingSnapshot = true;
         try {
-            const snapshotPrompt = loadPrompt('snapshot_prompt.txt');
-            if (!snapshotPrompt) return;
+            const snapshotPrompt = loadPrompt('snapshot_prompt.txt', { required: true });
 
             console.log('📸 Creating session snapshot...');
 
@@ -268,7 +268,7 @@ export class ContextManager {
                 console.warn(`Snapshot truncated to ${maxSnapshotChars} chars`);
             }
 
-            const filePath = path.join(process.cwd(), 'uploads', this.SNAPSHOT_FILE_NAME);
+            const filePath = path.join(getUploadsDir(), this.SNAPSHOT_FILE_NAME);
             fs.writeFileSync(filePath, snapshot, 'utf-8');
 
             this.snapshot70Done = true;
@@ -287,8 +287,7 @@ export class ContextManager {
     public async createTransitionSnapshot(): Promise<string | null> {
         this.isCreatingSnapshot = true;
         try {
-            const snapshotPrompt = loadPrompt('snapshot_prompt.txt');
-            if (!snapshotPrompt) return null;
+            const snapshotPrompt = loadPrompt('snapshot_prompt.txt', { required: true });
 
             console.log('📸 Creating transition snapshot (90-95%)...');
 
@@ -314,7 +313,7 @@ export class ContextManager {
                 console.warn(`Snapshot truncated to ${maxSnapshotChars} chars`);
             }
 
-            const filePath = path.join(process.cwd(), 'uploads', this.SNAPSHOT_FILE_NAME);
+            const filePath = path.join(getUploadsDir(), this.SNAPSHOT_FILE_NAME);
             fs.writeFileSync(filePath, snapshot, 'utf-8');
 
             this.snapshot70Done = true;
@@ -332,7 +331,7 @@ export class ContextManager {
      * Absolute path to the snapshot file, or null if it does not exist.
      */
     public getSnapshotPath(): string | null {
-        const filePath = path.join(process.cwd(), 'uploads', this.SNAPSHOT_FILE_NAME);
+        const filePath = path.join(getUploadsDir(), this.SNAPSHOT_FILE_NAME);
         return fs.existsSync(filePath) ? filePath : null;
     }
 
@@ -341,7 +340,7 @@ export class ContextManager {
      * Called after a successful context transition and on session reset.
      */
     public clearSnapshot(): void {
-        const filePath = path.join(process.cwd(), 'uploads', this.SNAPSHOT_FILE_NAME);
+        const filePath = path.join(getUploadsDir(), this.SNAPSHOT_FILE_NAME);
         if (fs.existsSync(filePath)) {
             try {
                 fs.unlinkSync(filePath);

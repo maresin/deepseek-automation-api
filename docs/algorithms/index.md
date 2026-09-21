@@ -40,6 +40,8 @@
 | B6 | Детект плашки Server Busy | active | [response.md](response.md#b6) |
 | B7 | Обработка Server Busy → shutdown | active | [response.md](response.md#b7) |
 | B8 | Извлечение tool_calls из ответа модели | active | [response.md](response.md#b8) |
+| B9 | Восстановление обрезанного JSON | active | [response.md](response.md#b9) |
+| B10 | Управление системными промптами | active | [response.md](response.md#b10) |
 
 ### Управление контекстом
 

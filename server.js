@@ -21,7 +21,8 @@ const { Selectors } = require('./dist/browser/Selectors.js');
 require('dotenv').config();
 
 const app = express();
-const upload = multer({ dest: 'uploads/' });
+const { getUploadsDir } = require('./dist/utils/paths.js');
+const upload = multer({ dest: getUploadsDir() });
 
 // ============================================================
 // MIDDLEWARE
@@ -229,7 +230,7 @@ async function validateEnvironment() {
     }
 
     const { chromium } = require('playwright-core');
-    const { getChromiumExecutablePath } = require('./dist/utils/paths.js');
+    const { getChromiumExecutablePath, getUploadsDir } = require('./dist/utils/paths.js');
 
     let browser;
     let context;
