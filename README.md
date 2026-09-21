@@ -21,6 +21,7 @@ usable for real, long-running work.
 ## Table of contents
 
 - [Highlights](#highlights)
+- [Known problems, addressed](#known-problems-addressed)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [API endpoints](#api-endpoints)
@@ -60,6 +61,34 @@ usable for real, long-running work.
 - **Selector validation on startup.** The server refuses to run if
   critical UI selectors are missing. Better a hard failure than silent
   partial behavior.
+
+---
+
+## Known problems, addressed
+
+The failure modes below are not unique to this project — they are
+documented in LLM proxies, agent frameworks, and RAG toolkits. What
+matters is that each has a concrete, tested solution here.
+
+- **Truncated tool_calls JSON.** DeepSeek Web occasionally drops the
+  closing `]}` on long compact output. Bracket-close repair restores
+  the frame without touching content; mid-string truncation is
+  refused. See [B9](docs/algorithms/response.md#b9).
+
+- **Markdown-polluted tool_calls.** Models wrap JSON in fences or add
+  preamble. Balanced-brace extraction handles both, including `{}`
+  inside string values. See [B8](docs/algorithms/response.md#b8).
+
+- **RAG temporal blindness.** Pure similarity ranking prefers old,
+  semantically rich documents over recent relevant ones. Ranking is
+  multiplicative: `similarity × (W + (1−W) × recency)`, keeping
+  semantics primary. See [R4](docs/algorithms/rag.md#r4).
+
+- **Context overflow.** Long sessions die silently on other proxies.
+  Here, two thresholds (70% / 90%) trigger snapshot and transition,
+  with an explicit `finish_reason: "length"` when a response is
+  incomplete. See [C3](docs/algorithms/context.md#c3) and
+  [A4](docs/algorithms/session.md#a4).
 
 ---
 
@@ -572,6 +601,13 @@ restart policy) should decide when to bring it back.
 in the final answer but do count toward the limit. The server applies a
 `DEEPSEEK_DEEPTHINK_MULTIPLIER` (default 2.5) to keep the estimate
 honest.
+
+**Invalid JSON from the model is not repaired.** When the model emits a
+long string value with unescaped quotes or literal newlines, the
+response cannot be parsed as JSON. This case is intentionally left to
+the client — silently patching invalid content risks truncating a
+file's body without detection. A pretty-printed format instruction in
+`tools_prompt.txt` reduces the frequency but does not eliminate it.
 
 ---
 
