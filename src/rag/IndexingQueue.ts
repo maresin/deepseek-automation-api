@@ -22,6 +22,7 @@
 import fs from 'fs';
 import path from 'path';
 import { isIndexableFile, readTextFileSafe } from '../utils/fileUtils.js';
+import { getUploadsDir } from '../utils/paths.js';
 
 /**
  * One unit of work: a file to index into the RAG store of a session.
@@ -152,6 +153,18 @@ export class IndexingQueue {
         } catch (err) {
             console.warn(`⚠️ [bg] Could not delete ${path.basename(filePath)}:`, err);
         }
+
+        // Each file lives in a per-request subdirectory. After the last
+        // file in that directory is removed, drop the directory itself.
+        // rmdirSync is atomic: it silently fails if the directory is not
+        // empty (other files from the same request may still be queued).
+        try {
+            const parent = path.resolve(path.dirname(filePath));
+            const uploadsRoot = path.resolve(getUploadsDir());
+            if (parent !== uploadsRoot) {
+                fs.rmdirSync(parent);
+            }
+        } catch { /* not empty, or already gone */ }
     }
 
     /**

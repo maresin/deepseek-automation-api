@@ -1,6 +1,7 @@
 # Dependencies
 node_modules/
 package-lock.json
+.gitignore
 
 # Compiled output
 dist/
@@ -11,6 +12,7 @@ browsers/
 
 # Session and key files
 state.json
+chat_state.json
 state_*.json
 .api-key*
 .deepseek-creds.json

@@ -13,12 +13,21 @@
  *
  * Typical use case: describing an image in isolation and inserting the
  * description into the main session as reference material.
+ *
+ * The uploaded file (if any) is stored in its own per-request
+ * subdirectory with the original filename preserved, so the model sees
+ * the correct name.
  */
 
 const path = require('path');
 const fs = require('fs');
 const { getClient } = require('../state');
 const { getUploadsDir } = require('../../dist/utils/paths.js');
+const {
+    sanitizeFilename,
+    uniquePath,
+    decodeOriginalName,
+} = require('../utils.js');
 
 module.exports = async function singleRoute(req, res) {
     const client = getClient();
@@ -47,11 +56,18 @@ module.exports = async function singleRoute(req, res) {
         return res.status(400).json({ error: 'No user message or file' });
     }
 
-    // Move the uploaded file to its final location under uploads/.
+    // Move the uploaded file into its own subdirectory, preserving the
+    // original basename so the model sees the correct name.
     let tempFilePath = null;
+    let requestDir = null;
     if (file) {
-        const ext = path.extname(file.originalname);
-        tempFilePath = path.join(getUploadsDir(), `${Date.now()}${ext}`);
+        const originalName = decodeOriginalName(file.originalname);
+        const requestId = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        requestDir = path.join(getUploadsDir(), requestId);
+        fs.mkdirSync(requestDir, { recursive: true });
+
+        const safeName = sanitizeFilename(originalName);
+        tempFilePath = uniquePath(requestDir, safeName);
         fs.renameSync(file.path, tempFilePath);
     }
 
@@ -61,15 +77,13 @@ module.exports = async function singleRoute(req, res) {
     try {
         response = await client.executeInTemporaryChat(messages, tempFilePath);
     } catch (err) {
-        if (tempFilePath && fs.existsSync(tempFilePath)) {
-            fs.unlinkSync(tempFilePath);
-        }
+        if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+        if (requestDir) { try { fs.rmdirSync(requestDir); } catch { /* ignore */ } }
         console.error('Single request failed:', err);
         return res.status(500).json({ error: err.message });
     }
-    if (tempFilePath && fs.existsSync(tempFilePath)) {
-        fs.unlinkSync(tempFilePath);
-    }
+    if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+    if (requestDir) { try { fs.rmdirSync(requestDir); } catch { /* ignore */ } }
 
     // Optionally append the answer to the main chat as a system message.
     const insert = insert_to_context === 'true' || insert_to_context === true;

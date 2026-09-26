@@ -111,11 +111,101 @@ function buildPrompt(messages, tools) {
     return toolsText + conversationText;
 }
 
+/**
+ * Sanitize a client-supplied filename for use as a filesystem basename.
+ *
+ * Removes path separators, control characters, and Windows-forbidden
+ * characters. Keeps Unicode letters (Cyrillic, CJK, accented Latin) so
+ * the original name is preserved visually.
+ *
+ * @param {string} name - Original filename from the client.
+ * @returns {string} Safe basename (at least one character).
+ */
+function sanitizeFilename(name) {
+    if (!name || typeof name !== 'string') return 'file';
+
+    // Strip any directory components (Windows and POSIX separators).
+    let base = name.replace(/^.*[\\/]/, '');
+
+    // Remove control characters and characters forbidden on Windows.
+    base = base.replace(/[\x00-\x1f\x7f<>:"|?*]/g, '');
+
+    // Trim leading/trailing dots and spaces.
+    base = base.replace(/^[.\s]+|[.\s]+$/g, '');
+
+    if (!base || base === '.' || base === '..') return 'file';
+
+    // Cap length to avoid filesystem limits (255 bytes typical).
+    if (Buffer.byteLength(base, 'utf8') > 200) {
+        const ext = path.extname(base);
+        while (Buffer.byteLength(base, 'utf8') > 200 && base.length > ext.length) {
+            base = base.slice(0, -1);
+        }
+    }
+
+    return base;
+}
+
+/**
+ * Fix filenames that multer decodes as latin1.
+ *
+ * Busboy (used by multer) decodes the multipart `filename` header as
+ * latin1 regardless of the client's declared charset. When the client
+ * sends a UTF-8 filename (Cyrillic, CJK, accented Latin), the bytes
+ * end up as mojibake: "отчёт.txt" becomes "Ð¾Ñ‚Ñ‡Ñ'Ñ‚.txt".
+ *
+ * Reinterpreting the string as latin1 bytes and decoding them as UTF-8
+ * restores the original name. The round-trip check ensures we only
+ * apply the conversion when it is actually reversible — a filename
+ * that was already correct stays untouched.
+ *
+ * @param {string} name - Original filename from multer.
+ * @returns {string} Decoded filename.
+ */
+function decodeOriginalName(name) {
+    if (!name || typeof name !== 'string') return name;
+
+    try {
+        const decoded = Buffer.from(name, 'latin1').toString('utf8');
+        // If re-encoding the decoded string back to latin1 produces the
+        // original, the conversion was lossless — meaning the input was
+        // mojibake, not a real latin1 name.
+        if (Buffer.from(decoded, 'utf8').toString('latin1') === name) {
+            return decoded;
+        }
+    } catch { /* ignore */ }
+
+    return name;
+}
+
+/**
+ * Build a unique path inside a directory by appending `_1`, `_2`, ...
+ * if the target already exists. Preserves the extension.
+ *
+ * @param {string} dir - Target directory (must exist).
+ * @param {string} name - Desired basename.
+ * @returns {string} Absolute path that does not yet exist.
+ */
+function uniquePath(dir, name) {
+    const ext = path.extname(name);
+    const stem = name.slice(0, name.length - ext.length);
+    let candidate = path.join(dir, name);
+    let i = 1;
+    while (fs.existsSync(candidate)) {
+        candidate = path.join(dir, `${stem}_${i}${ext}`);
+        i++;
+    }
+    return candidate;
+}
+
 module.exports = {
     generateApiKey,
     getApiKey,
     saveApiKey,
     deleteSessionFiles,
     bothFilesExist,
-    buildPrompt
+    buildPrompt,
+    sanitizeFilename,
+    uniquePath,
+    decodeOriginalName,
 };

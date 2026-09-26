@@ -19,15 +19,21 @@ const path = require('path');
 const fs = require('fs');
 const { getClient } = require('../state');
 const { buildPrompt } = require('../utils');
+const {
+    sanitizeFilename,
+    uniquePath,
+    decodeOriginalName,
+} = require('../utils.js');
 const { loadPrompt } = require('../../dist/utils/prompts.js');
 const { getHistoryStore } = require('../../dist/rag/init.js');
 const { getIndexingQueue } = require('../../dist/rag/IndexingQueue.js');
 const { isSupportedByDeepSeek } = require('../../dist/utils/fileUtils.js');
+const { getUploadsDir } = require('../../dist/utils/paths.js');
 const {
     normalizeToolCall,
     parseResponse,
 } = require('../response-parser.js');
-const { getUploadsDir } = require('../../dist/utils/paths.js');
+const { getFileInfo } = require('./files.js');
 
 const {
     SwitchDeepThinkTask,
@@ -82,14 +88,6 @@ function extractTextFromMessages(messages) {
         }
     }
     return textMessages;
-}
-
-/**
- * Resolve a file_id back to its absolute filesystem path.
- */
-function resolveFileId(fileId) {
-    const { getFilePath } = require('./files.js');
-    return getFilePath(fileId);
 }
 
 /**
@@ -265,21 +263,29 @@ async function handleChatRoute(req, res) {
                          store !== null;
 
     // --------------------------------------------------------
-    // 2. RESOLVE file_id
+    // 2. RESOLVE file_id AND PREPARE REQUEST DIRECTORY
     // --------------------------------------------------------
     const fileIds = extractFileIdsFromMessages(messages);
     const textMessages = extractTextFromMessages(messages);
     const tempFilePaths = [];
 
+    // Per-request subdirectory for multipart uploads and RAG context
+    // files. Files uploaded via /v1/files are already stored in their
+    // own subdirectory (uploads/<fileId>/) and are referenced directly
+    // by path — no move, no copy.
+    const requestId = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const requestDir = path.join(getUploadsDir(), requestId);
+    fs.mkdirSync(requestDir, { recursive: true });
+
     for (const fileId of fileIds) {
-        const filePath = resolveFileId(fileId);
-        if (filePath && fs.existsSync(filePath)) {
-            if (!isSafePath(filePath)) {
+        const info = getFileInfo(fileId);
+        if (info && fs.existsSync(info.path)) {
+            if (!isSafePath(info.path)) {
                 console.warn(`⚠️ Unsafe file path for file_id ${fileId}`);
                 return res.status(400).json({ error: `Invalid file path for file_id: ${fileId}` });
             }
-            tempFilePaths.push(filePath);
-            console.log(`📎 Resolved file_id ${fileId} → ${path.basename(filePath)}`);
+            tempFilePaths.push(info.path);
+            console.log(`📎 Resolved file_id ${fileId} → ${path.basename(info.path)}`);
         } else {
             console.warn(`⚠️ File not found for file_id: ${fileId}`);
             return res.status(400).json({ error: `File not found for file_id: ${fileId}` });
@@ -291,7 +297,8 @@ async function handleChatRoute(req, res) {
     // --------------------------------------------------------
     if (files && files.length) {
         for (const file of files) {
-            const ext = path.extname(file.originalname).toLowerCase();
+            const originalName = decodeOriginalName(file.originalname);
+            const ext = path.extname(originalName).toLowerCase();
 
             if (!isSupportedByDeepSeek(ext)) {
                 return res.status(400).json({
@@ -299,21 +306,19 @@ async function handleChatRoute(req, res) {
                 });
             }
             if (file.size === 0) {
-                return res.status(400).json({ error: `File is empty: ${file.originalname}` });
+                return res.status(400).json({ error: `File is empty: ${originalName}` });
             }
             if (file.size > MAX_FILE_SIZE) {
                 return res.status(400).json({
-                    error: `File too large: ${file.originalname} (${file.size} bytes). Maximum: ${MAX_FILE_SIZE} bytes.`,
+                    error: `File too large: ${originalName} (${file.size} bytes). Maximum: ${MAX_FILE_SIZE} bytes.`,
                 });
             }
 
-            const tempPath = path.join(
-                getUploadsDir(),
-                `${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`
-            );
+            const safeName = sanitizeFilename(originalName);
+            const tempPath = uniquePath(requestDir, safeName);
             fs.renameSync(file.path, tempPath);
             tempFilePaths.push(tempPath);
-            console.log(`📎 Multipart file: ${file.originalname} → ${path.basename(tempPath)}`);
+            console.log(`📎 Multipart file: ${originalName} → ${path.basename(tempPath)}`);
         }
     }
 
@@ -399,7 +404,7 @@ async function handleChatRoute(req, res) {
                     const ragFooter = '\n\n[End of retrieved context]\n';
 
                     ragContextPath = path.join(
-                        getUploadsDir(),
+                        requestDir,
                         `rag_context_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.txt`
                     );
                     fs.writeFileSync(
@@ -523,22 +528,29 @@ async function handleChatRoute(req, res) {
         if (fs.existsSync(p)) fs.unlinkSync(p);
     }
 
+    // Remove empty per-request directories. Enqueued files are still
+    // on disk; the indexing worker removes their directories after
+    // processing.
+    const uploadsRoot = path.resolve(getUploadsDir());
+    const dirsToClean = new Set([path.resolve(requestDir)]);
+    for (const p of tempFilePaths) {
+        const parent = path.resolve(path.dirname(p));
+        if (parent !== uploadsRoot) dirsToClean.add(parent);
+    }
+    for (const dir of dirsToClean) {
+        try { fs.rmdirSync(dir); } catch { /* not empty */ }
+    }
+
     // --------------------------------------------------------
     // 10. RESPONSE
     // --------------------------------------------------------
     //
     // DeepSeek Web is a text interface: the model has no native
     // tool-calling channel. It may wrap its tool_calls JSON in
-    // markdown fences or add conversational preamble. Three-stage
-    // extraction:
-    //
-    //   1. Strict JSON.parse — covers the common case, zero overhead.
-    //   2. Balanced-brace extraction from the raw text — handles
-    //      fences, preamble, and code inside string values.
-    //   3. Bracket-close repair — handles the case where the model
-    //      produced complete content but dropped the final `]}`.
-    //
-    // See algorithms B8 and B9 in docs/algorithms/response.md.
+    // markdown fences, add conversational preamble, or drop the
+    // closing brackets on long compact output. parseResponse handles
+    // all three cases. See algorithms B8 and B9 in
+    // docs/algorithms/response.md.
     //
     const { isToolCall, parsed: parsedResponse, wasTruncated } = parseResponse(result);
 
