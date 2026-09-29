@@ -195,7 +195,7 @@ async function performAutoLogin(page, email, password) {
             return false;
         }
 
-        await page.waitForSelector('textarea[placeholder*="Message DeepSeek"]', { timeout: 30000 });
+        await page.waitForSelector(Selectors.mainTextarea, { timeout: 30000 });
         console.log('✅ Auto-login successful');
 
         const context = page.context();
@@ -236,7 +236,13 @@ async function validateEnvironment() {
     let context;
     try {
         browser = await chromium.launch({ headless: true, executablePath: getChromiumExecutablePath() });
-        context = await browser.newContext({ storageState: 'state.json' });
+        context = await browser.newContext({
+            storageState: 'state.json',
+            locale: 'en-US',
+            extraHTTPHeaders: {
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+        });
         const page = await context.newPage();
 
         await page.goto('https://chat.deepseek.com', { waitUntil: 'domcontentloaded' });
@@ -257,12 +263,14 @@ async function validateEnvironment() {
         }
 
         try {
-            await page.waitForSelector('textarea[placeholder*="Message DeepSeek"]', { timeout: 30000 });
+            await page.waitForSelector(Selectors.mainTextarea, { timeout: 30000 });
         } catch {
             console.warn('⚠️ Chat page did not load, continuing with limited validation');
         }
 
-        await ensureEnglishLanguage(page);
+        await ensureEnglishLanguage(page).catch((err) => {
+            console.warn('⚠️ Language check failed (non-fatal):', err.message);
+        });
 
         const { results, allFound } = await validateSelectors(page);
 

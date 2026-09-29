@@ -351,13 +351,20 @@ export class DeepSeekClient {
         } else {
             await this.browserManager.goto('https://chat.deepseek.com/sign_in');
         }
-        await this.browserManager.page!.waitForTimeout(3000);
+        // No fixed pause here: ensureAuthenticated waits for the network to
+        // settle before probing.
         await this.authManager.ensureAuthenticated(this.config.email, this.config.password);
         await this.saveState();
 
         this.page = this.browserManager.page;
 
-        await this.ensureEnglishLanguage();
+        // The browser context is configured with en-US locale and
+        // Accept-Language header, so DeepSeek should already serve the
+        // English UI. This check is a safety net for edge cases: a stale
+        // locale cookie, or an account preference. It fails softly.
+        await this.ensureEnglishLanguage().catch((err) => {
+            console.warn('⚠️ Language check failed (non-fatal):', err.message);
+        });
 
         const enableRestore = process.env.ENABLE_RESTORE === 'true';
         if (enableRestore) {

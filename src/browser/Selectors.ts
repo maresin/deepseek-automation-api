@@ -9,9 +9,17 @@ export const Selectors = {
     // ============================================================
     // AUTHENTICATION
     // ============================================================
-    emailInput: 'input.ds-input__input[placeholder*="email"]',
-    passwordInput: 'input.ds-input__input[placeholder*="Password"]',
-    loginButton: '.ds-button--primary.ds-button--filled:has-text("Log in")',
+    //
+    // The sign-in page may render in any language — the browser locale
+    // decides. Language cannot be switched before login. These selectors
+    // therefore do not depend on placeholder text or button labels.
+    //
+    // `type="text"` and `type="password"` are stable across locales:
+    // every DeepSeek sign-in variant uses them for the two credential
+    // fields, and they are unique on the page.
+    emailInput: 'input.ds-input__input[type="text"]',
+    passwordInput: 'input.ds-input__input[type="password"]',
+    loginButton: '.ds-button--primary.ds-button--filled',
     loginButtonFallback: '.ds-button--primary.ds-button--filled',
     signInPage: '/sign_in',
 
@@ -24,7 +32,7 @@ export const Selectors = {
     // ============================================================
     // INPUT & SEND
     // ============================================================
-    mainTextarea: 'textarea[placeholder*="Message DeepSeek"]:not([role="searchbox"])',
+    mainTextarea: 'textarea.ds-scroll-area[name="search"]:not([role="searchbox"])',
     sendButton: '[role="button"].ds-button--circle:has(svg path[d^="M8.3125 0.98"]):not(.ds-button--disabled)',
     sendButtonExists: '[role="button"].ds-button--circle:has(svg path[d^="M8.3125 0.98"])',
     attachButton: '[role="button"]:has(svg path[d^="M5.5498 9.75V5"])',
