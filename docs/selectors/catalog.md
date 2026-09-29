@@ -7,10 +7,16 @@
 
 | Элемент | Селектор | Приоритет |
 |---|---|---|
-| Email/Phone | `input.ds-input__input[placeholder*="email"]` | класс + атрибут |
-| Password | `input.ds-input__input[placeholder*="Password"]` | класс + атрибут |
-| Log in | `.ds-button--primary.ds-button--filled:has-text("Log in")` | класс + текст |
+| Email/Phone | `input.ds-input__input[type="text"]` | тип + класс |
+| Password | `input.ds-input__input[type="password"]` | тип + класс |
+| Log in | `.ds-button--primary.ds-button--filled` | класс |
 | Log in (fallback) | `.ds-button--primary.ds-button--filled` | класс |
+
+**Почему без текста.** Страница входа может отображаться на любом
+языке — язык интерфейса нельзя переключить до логина. Селекторы
+поэтому опираются только на атрибут `type` и классы дизайн-системы.
+`type="text"` и `type="password"` уникальны на странице и не зависят
+от локали. См. [принципы выбора](principles.md#страница-входа).
 
 ## Тогглы
 

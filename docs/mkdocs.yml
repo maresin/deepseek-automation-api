@@ -50,6 +50,7 @@ nav:
       - Установка: guides/installation.md
       - Использование: guides/usage.md
       - Управление сессией: guides/session-management.md
+      - Построение приложений: guides/building-applications.md      
       - Тестирование: guides/testing.md
       - Диагностика: guides/troubleshooting.md
   - Журнал изменений:

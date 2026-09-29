@@ -198,6 +198,60 @@ rm -rf node_modules browsers
 - **Диск:** ~500 МБ на Chromium + node_modules; `uploads/` растёт
   в зависимости от нагрузки.
 
+## Кроссплатформенность
+
+HTTP-API, серверный код и тесты работают на Linux, macOS и Windows
+без изменений. Платформенные различия касаются только команд
+управления процессами и запуска примеров.
+
+### Требования по платформам
+
+| Платформа | Node.js | Chromium | Дополнительно |
+|---|---|---|---|
+| Linux | 18+ | `playwright install` | — |
+| macOS | 18+ | `playwright install` | — |
+| Windows | 18+ | `playwright install` | Git Bash (для `.sh` примеров) |
+
+Все `npm start`, `npm run build`, `npm run test:*` работают
+одинаково. Скрипты используют `rimraf` (вместо `rm -rf`) и
+`cross-env` (вместо `VAR=value command`), поэтому совместимы с
+`cmd.exe`, PowerShell и Unix-шеллами.
+
+### Управление процессами
+
+Везде, где документация использует `pkill` или `lsof`, есть
+кроссплатформенная альтернатива:
+
+```bash
+npx kill-port 3000
+```
+
+Для остановки фонового процесса по PID-файлу (см.
+[Построение приложений](building-applications.md)):
+
+**Linux / macOS / Git Bash:**
+```bash
+kill $(cat server-a.pid)
+```
+
+**PowerShell:**
+```powershell
+Stop-Process -Id (Get-Content server-a.pid)
+```
+
+**cmd:**
+```cmd
+for /f %i in (server-a.pid) do taskkill /PID %i /F
+```
+
+### Примеры в `examples/curl/`
+
+Файлы `.sh` — reference-команды, не runnable-pipeline. На Windows
+запускаются через Git Bash или WSL. Установка
+[Git for Windows](https://git-scm.com/download/win) даёт bash
+бесплатно. В крайнем случае каждую `curl`-команду можно скопировать
+в PowerShell или cmd вручную.
+
 ## Связанные разделы
 
 - [Использование](usage.md) — примеры работы с API.

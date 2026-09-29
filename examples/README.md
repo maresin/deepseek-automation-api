@@ -31,7 +31,10 @@ how you will consume the API.
 - **JavaScript:** Node.js 18+ (native `fetch`, `FormData`, `Blob`,
   top-level `await`)
 
-- **cURL:** `bash`, `curl`, optionally `jq` for pretty output
+- **cURL:** `bash`, `curl`, optionally `jq` for pretty output.
+  The `.sh` files are reference commands, not a runnable pipeline. On
+  Windows, run them in Git Bash or WSL, or copy individual `curl`
+  commands into PowerShell / cmd.
 
 The server URL can be overridden via `DEEPSEEK_BASE_URL` (default:
 `http://localhost:3000`).

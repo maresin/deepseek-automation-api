@@ -192,34 +192,44 @@ Any non-zero exit code indicates a test failure.
 
 ### Port already in use
 
-`test:api` requires the server to be running on port 3000;
-`test:rag` requires the port to be **free** (it spawns its own
-server). Both situations produce the same underlying error:
+The most common problem. `test:api` requires the server to be running
+on port 3000; `test:rag` requires the port to be **free** (it spawns
+its own server). Both situations produce the same error:
 
 ```
 Error: listen EADDRINUSE: address already in use :::3000
 ```
 
-**Fix:**
+**Cross-platform fix:**
 
 ```bash
-# Find what is holding the port
-lsof -i :3000
-
-# Kill only that process (replace <PID> with the number from the output)
-kill <PID>
-
-# Or, if you know it is a stray server from a previous run:
-pkill -f "node server.js"
+npx kill-port 3000
 ```
 
-**Note.** `pkill -f "node server.js"` matches any process whose command
-line contains `node server.js`. On a shared machine this could kill
-someone else's process. On a local development machine it is safe and
-convenient. Prefer `lsof -i :3000` + `kill <PID>` when in doubt.
+Works identically on Linux, macOS, and Windows.
+
+**Platform-specific alternatives:**
+
+Linux / macOS:
+```bash
+lsof -i :3000      # find the PID
+kill <PID>         # kill that process
+```
+
+Windows (PowerShell):
+```powershell
+Get-NetTCPConnection -LocalPort 3000 |
+  Select-Object -ExpandProperty OwningProcess
+Stop-Process -Id <PID> -Force
+```
+
+**Note.** `pkill -f "node server.js"` and `taskkill /IM node.exe`
+match broadly — they can kill unrelated processes. Prefer `kill-port`
+or a specific PID.
 
 After killing, verify the port is free:
 
 ```bash
-lsof -i :3000    # should print nothing
+curl http://localhost:3000/health
+# connection refused
 ```

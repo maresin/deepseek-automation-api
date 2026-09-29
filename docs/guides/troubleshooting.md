@@ -7,36 +7,61 @@
 **Симптом:** `npm start` падает с `Error: listen EADDRINUSE`.
 
 **Причина:** на порту 3000 уже работает другой процесс — обычно
-зависший сервер от предыдущего запуска, или экземпляр, запущенный
+зависший сервер от предыдущего запуска или экземпляр, запущенный
 тестом `test:rag`.
 
-**Решение:**
+**Решение (кроссплатформенное):**
 
 ```bash
-# 1. Найти процесс
-lsof -i :3000
-
-# 2. Убить по PID
-kill <PID>
-
-# 3. Или, если знаете, что это зависший сервер:
-pkill -f "node server.js"
-
-# 4. Проверить, что порт свободен
-lsof -i :3000
+npx kill-port 3000
 ```
 
-**Частый сценарий.** Запустили `npm start` в одном терминале, потом
-случайно запустили его же во втором. Второй процесс падает с
-`EADDRINUSE` — но перед падением успевает запустить Chromium
-(в версии `server.js` до правки порядка `validateEnvironment`).
-После правки (`validateEnvironment` вызывается после `app.listen`)
-Chromium больше не стартует при занятом порте.
+Работает одинаково на Linux, macOS и Windows. Команда находит
+процесс по порту и убивает его.
 
-**Профилактика.** Перед запуском `test:rag` всегда останавливайте
-основной сервер:
+**Проверка, что порт свободен:**
+
 ```bash
-pkill -f "node server.js"
+curl http://localhost:3000/health
+# connection refused
+```
+
+### Платформенные альтернативы
+
+**Linux / macOS:**
+
+```bash
+lsof -i :3000      # найти PID
+kill <PID>         # убить процесс
+```
+
+**Windows (PowerShell):**
+
+```powershell
+Get-NetTCPConnection -LocalPort 3000 |
+  Select-Object -ExpandProperty OwningProcess
+Stop-Process -Id <PID> -Force
+```
+
+**Windows (cmd):**
+
+```cmd
+netstat -ano | findstr :3000
+taskkill /PID <PID> /F
+```
+
+**Осторожно с `pkill -f "node server.js"` и `taskkill /IM node.exe`.**
+Оба убивают всё, что подходит под шаблон. `pkill` затронет все
+процессы `node server.js` на машине (включая другие ваши проекты,
+если они запускаются той же командой). `taskkill /IM node.exe`
+вообще убивает **все** Node-процессы. Используйте только если
+уверены, что других таких процессов нет.
+
+**Профилактика.** Перед запуском `test:rag` останавливайте основной
+сервер:
+
+```bash
+npx kill-port 3000
 npm run test:rag
 ```
 

@@ -25,18 +25,23 @@ CSS-модули с хэшированными именами классов (`_
 
 ### Страница входа
 
-Интерфейс может быть на любом языке. Селекторы **не должны содержать
-английский текст**:
+Интерфейс может быть на любом языке — локаль определяется до входа
+и переключается только после логина. Селекторы **не должны содержать
+английский текст и не должны опираться на placeholder**, потому что
+и то и другое локализуется.
 
 ```typescript
-emailInput: 'input.ds-input__input[placeholder*="email"]',
-passwordInput: 'input.ds-input__input[placeholder*="Password"]',
-loginButton: '.ds-button--primary.ds-button--filled:has-text("Log in")',
+emailInput: 'input.ds-input__input[type="text"]',
+passwordInput: 'input.ds-input__input[type="password"]',
+loginButton: '.ds-button--primary.ds-button--filled',
 loginButtonFallback: '.ds-button--primary.ds-button--filled',
 ```
 
-`loginButton` использует текст, но есть `loginButtonFallback` без текста —
-используется, если интерфейс не на английском.
+`type="text"` и `type="password"` — единственные стабильные признаки
+на этой странице. Placeholder локализуется (`"email"` → `"адрес
+электронной почты"`), текст кнопки тоже (`"Log in"` → `"Войти"`).
+Классы `.ds-input__input`, `.ds-button--primary.ds-button--filled`
+принадлежат дизайн-системе DeepSeek и от языка не зависят.
 
 ### New Chat
 

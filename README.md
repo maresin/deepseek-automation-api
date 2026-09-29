@@ -547,20 +547,24 @@ npm run test:selectors
 ### Port conflicts
 
 `test:api` needs the server running; `test:rag` needs the port free.
-Mixing them produces:
 
-```
-Error: listen EADDRINUSE: address already in use :::3000
-```
+**Cross-platform:**
 
 ```bash
-lsof -i :3000              # find the PID
-kill <PID>                 # or:
-pkill -f "node server.js"  # if it is a stray server
+npx kill-port 3000
 ```
 
-See [`tests/README.md`](tests/README.md) for the full troubleshooting
-guide.
+Works on Linux, macOS, and Windows. See
+[`tests/README.md`](tests/README.md) for platform-specific commands.
+
+**Cross-platform:**
+
+```bash
+npx kill-port 3000
+```
+
+Works on Linux, macOS, and Windows. See
+[`tests/README.md`](tests/README.md) for platform-specific commands.
 
 ---
 
@@ -636,7 +640,8 @@ Key sections:
   catalog.
 - **[API](docs/api/endpoints.md)** — HTTP reference.
 - **[Guides](docs/guides/installation.md)** — installation, usage,
-  session management, testing, troubleshooting.
+  session management, **building applications**, testing,
+  troubleshooting.
 
 Markdown files are readable directly in `docs/` without building.
 
