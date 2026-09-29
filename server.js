@@ -214,7 +214,7 @@ async function performAutoLogin(page, email, password) {
 // SELECTOR VALIDATION
 // ============================================================
 
-const { validateSelectors, ensureEnglishLanguage } = require('./server-modules/selector-validator');
+const { validateSelectors } = require('./server-modules/selector-validator');
 
 /**
  * Validates the environment before starting the server.
@@ -267,10 +267,6 @@ async function validateEnvironment() {
         } catch {
             console.warn('⚠️ Chat page did not load, continuing with limited validation');
         }
-
-        await ensureEnglishLanguage(page).catch((err) => {
-            console.warn('⚠️ Language check failed (non-fatal):', err.message);
-        });
 
         const { results, allFound } = await validateSelectors(page);
 

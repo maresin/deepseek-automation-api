@@ -358,13 +358,14 @@ export class DeepSeekClient {
 
         this.page = this.browserManager.page;
 
-        // The browser context is configured with en-US locale and
-        // Accept-Language header, so DeepSeek should already serve the
-        // English UI. This check is a safety net for edge cases: a stale
-        // locale cookie, or an account preference. It fails softly.
-        await this.ensureEnglishLanguage().catch((err) => {
-            console.warn('⚠️ Language check failed (non-fatal):', err.message);
-        });
+        // Language is forced at the browser-context level via locale: 'en-US'
+        // and Accept-Language in BrowserManager. Here we only verify that the
+        // chat page loaded — a locale-independent check.
+        const hasTextarea = await this.page.isVisible(Selectors.mainTextarea).catch(() => false);
+        if (!hasTextarea) {
+            throw new Error('Chat page did not load (mainTextarea not visible)');
+        }
+        console.log('✅ Chat page loaded');
 
         const enableRestore = process.env.ENABLE_RESTORE === 'true';
         if (enableRestore) {
@@ -379,92 +380,6 @@ export class DeepSeekClient {
 
         this.isInitialized = true;
         console.log('✅ DeepSeek client ready!');
-    }
-
-    async ensureEnglishLanguage(): Promise<void> {
-        console.log('🌐 Checking interface language...');
-        const page = this.page;
-
-        const isEnglish = await page.isVisible('textarea[placeholder*="Message DeepSeek"]').catch(() => false);
-        if (isEnglish) {
-            console.log('✅ Interface language is English');
-            return;
-        }
-
-        console.log('⚠️ Switching language to English...');
-        try {
-            const opened = await this.openProfileMenu();
-            if (!opened) {
-                console.warn('⚠️ Could not open profile menu – language check skipped');
-                return;
-            }
-
-            const settingsItem = await page.$(Selectors.settingsMenuItem);
-            if (!settingsItem) {
-                await page.keyboard.press('Escape');
-                return;
-            }
-            await settingsItem.click();
-            await page.waitForSelector(Selectors.languageSelect, { timeout: 5000 });
-
-            const generalTab = await page.$(Selectors.settingsTabGeneral);
-            if (generalTab) {
-                await generalTab.click();
-                await page.waitForTimeout(1000);
-            }
-
-            const langSelect = await page.$(Selectors.languageSelect);
-            if (!langSelect) {
-                await this.closeSettings();
-                return;
-            }
-            await langSelect.click();
-            await page.waitForSelector('.ds-select-option', { timeout: 3000 });
-
-            const englishOption = await page.$(Selectors.languageOptionEnglish);
-            if (englishOption) {
-                await englishOption.click();
-                await page.waitForTimeout(1500);
-                console.log('✅ Language switched to English');
-            } else {
-                console.warn('⚠️ English language option not found, continuing with current language');
-            }
-
-            await this.closeSettings();
-        } catch (err) {
-            console.error('❌ Language switch failed:', (err as Error).message);
-            await this.closeSettings().catch(() => {});
-        }
-    }
-
-    private async closeSettings(): Promise<void> {
-        const page = this.page;
-        const closeBtn = await page.$(Selectors.settingsClose);
-        if (closeBtn) {
-            await closeBtn.click();
-        } else {
-            await page.keyboard.press('Escape');
-        }
-        await page.waitForTimeout(1000);
-    }
-
-    async openProfileMenu(): Promise<boolean> {
-        const page = this.page;
-        return await page.evaluate(() => {
-            const icons = document.querySelectorAll('.ds-icon');
-            for (let i = 0; i < icons.length; i++) {
-                const icon = icons[i];
-                const svg = icon.querySelector('svg');
-                if (svg && svg.innerHTML.includes('M4.55146 8.00001')) {
-                    const parent = icon.closest('[tabindex="0"]') as HTMLElement | null;
-                    if (parent) {
-                        parent.click();
-                        return true;
-                    }
-                }
-            }
-            return false;
-        });
     }
 
     async saveState(): Promise<void> {
