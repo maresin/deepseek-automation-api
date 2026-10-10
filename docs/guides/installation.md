@@ -188,6 +188,13 @@ rm -rf node_modules browsers
 `state.json`, `chat_state.json`, `context_stats.json`,
 `context_snapshot.json`, `.api-key`, `rag_data/`.
 
+> **Важно.** `npm run clean` удаляет файлы только по путям по умолчанию
+> (`./state.json`, `./chat_state.json`, `./.api-key`, `./uploads/`,
+> `./rag_data/`). Если вы переопределили `DEEPSEEK_STATE_PATH`,
+> `DEEPSEEK_CHAT_STATE_PATH`, `DEEPSEEK_API_KEY_PATH`,
+> `DEEPSEEK_UPLOAD_DIR` или `RAG_DATA_DIR`, удалите файлы вручную —
+> команда их не тронет.
+
 ## Требования к среде
 
 - **ОС:** Linux, macOS, Windows.
@@ -261,4 +268,3 @@ for /f %i in (server-a.pid) do taskkill /PID %i /F
 - [Диагностика](troubleshooting.md) — частые проблемы.
 - [Алгоритмы](../algorithms/index.md) — контрактные описания всех
   процессов.
-

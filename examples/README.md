@@ -92,6 +92,11 @@ cat examples/curl/01_getting_started.sh
 | `04_files` | Multipart `files`, two-phase `file_id`, mixed content |
 | `05_session` | Context monitoring, 409 / 503 / 401 / 504, transitions, degradation |
 
+**Separately:**
+| Directory | Covers |
+|---|---|
+| [`multi-agent/`](multi-agent/README.md) | Two agents, one DeepSeek account, shared cookie session, no captcha |
+
 Every example exists in three languages:
 
 ```
@@ -187,6 +192,21 @@ Full discussion: [Session management](../docs/guides/session-management.md).
 | 504 retry with backoff | 05 |
 | Fresh vs restore chat | 05 |
 | Temporary chat | 05 |
+
+## Multi-agent deployment
+
+The `multi-agent/` directory contains a working example of two
+independent agents sharing a single DeepSeek cookie session:
+
+- One login, one cookie file (`shared-state.json`).
+- Two processes, two ports, two isolated chats.
+- No captcha in the automated browser (login happens in Firefox).
+- A working two-agent pipeline (`demo_client.py`) — researcher drafts,
+  writer critiques, both iterate.
+
+See [`multi-agent/README.md`](multi-agent/README.md) for the full
+recipe, or [`docs/guides/building-applications.md`](../docs/guides/building-applications.md)
+for the architectural discussion.
 
 ## Related documentation
 

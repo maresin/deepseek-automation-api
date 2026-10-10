@@ -4,11 +4,12 @@
 как backend для своего приложения — от простого чат-клиента до
 мультиагентной системы.
 
-Документ отвечает на три вопроса:
+Документ отвечает на четыре вопроса:
 
 - Как устроена сессия и что клиент может с ней делать.
 - Как построить одноагентное приложение.
 - Как построить мультиагентное приложение на нескольких процессах.
+- Что делать, когда автоматизированный браузер ловит капчу.
 
 Перед чтением: [Управление сессией](session-management.md) — что такое
 сессия, два лимита, деградация после перехода.
@@ -101,7 +102,7 @@ print(ask("Hello"))
 ## Мультиагентное приложение
 
 N агентов = N процессов на N портах. Каждый — со своим состоянием,
-ключом, чатом. Клиент маршрутизирует запросы между портами.
+ключом, чатом.
 
 ### Схема
 
@@ -129,169 +130,550 @@ DeepSeek), но:
 терпимо. Для десятка агентов и чередующихся запросов — нет. Два
 процесса решают задачу без единой правки кода API.
 
-### Подготовка: два `.env`
+### Проблема: логин и капча
 
-Создайте `.env.a` и `.env.b` в корне проекта.
+Прежде чем говорить о схеме, надо понять, **почему** нельзя просто
+запустить два процесса с разными `state.json` и дать каждому
+залогиниться сам.
+
+DeepSeek Web защищён Cloudflare Turnstile. Автоматизированный
+Chromium детектируется по десяткам сигналов: `navigator.webdriver`,
+Canvas/WebGL fingerprint, порядок заголовков, TLS JA3, отсутствие
+истории куки. Итоговый trust score оказывается ниже порога, и
+челлендж повторяется.
+
+**Что видит пользователь:**
+
+- Открывается окно Chromium.
+- Появляется форма входа — логин/пароль заполняются автоматически.
+- Появляется капча Cloudflare.
+- Пользователь решает капчу вручную — правильно.
+- Капча появляется снова.
+- Пользователь решает снова — правильно.
+- И так бесконечно.
+
+Проблема не в правильности ответов. Cloudflare агрегирует сигналы
+и решает, что браузер — автоматизированный. Правильные ответы
+игнорируются, потому что **сам браузер уже помечен**.
+
+Чем больше попыток, тем хуже: каждая неудачная попытка ухудшает
+trust score, и следующая капча становится строже. Это by design,
+не bug.
+
+**Второй процесс в такой ситуации только усугубит картину:** два
+автоматизированных логина с одного IP → Cloudflare поднимет уровень
+защиты для всего аккаунта.
+
+### Решение: один state, много чатов
+
+Мы **убираем логин из критического пути**. Логин происходит один раз,
+в обычном браузере (Firefox или Chrome), а автоматизированные
+процессы просто используют уже установленную cookie-сессию.
+
+```
+                ┌─────────────────────────────┐
+                │ shared-state.json           │   ← DeepSeek cookies
+                │ (одна cookie-сессия)        │      записаны один раз,
+                └──────────────┬──────────────┘      читаются всеми
+                               │
+                ┌──────────────┴──────────────┐
+                │                             │
+       ┌────────▼─────────┐         ┌─────────▼────────┐
+       │ Процесс A        │         │ Процесс B        │
+       │ PORT=3000        │         │ PORT=3001        │
+       │ chat_state-a     │         │ chat_state-b     │
+       │ .api-key-a       │         │ .api-key-b       │
+       │ uploads-a        │         │ uploads-b        │
+       │ rag_data-a       │         │ rag_data-b       │
+       └──────────────────┘         └──────────────────┘
+```
+
+**Что общего:**
+- `DEEPSEEK_STATE_PATH` — одна cookie-сессия DeepSeek.
+
+**Что уникально:**
+- `DEEPSEEK_CHAT_STATE_PATH` — иначе агенты перезапишут друг другу
+  `lastChatId` и оба окажутся в одном чате.
+- `DEEPSEEK_API_KEY_PATH` — иначе клиент не различит агентов.
+- `DEEPSEEK_UPLOAD_DIR` — иначе файлы смешаются при одновременной
+  загрузке.
+- `RAG_DATA_DIR` — иначе индексы лягут в одну папку.
+- `PORT` — очевидно.
+
+**Почему это работает.** Cloudflare доверяет обычному Firefox сильнее,
+чем headless Chromium под Playwright. Один успешный логин из
+нормального браузера даёт куки, которые Playwright потом просто
+переиспользует. Автоматизированный браузер не проходит челлендж — он
+его **вообще не видит**, потому что никогда не заходит на `/sign_in`.
+
+**Это не обход защиты.** Мы не пытаемся обмануть Cloudflare. Мы
+разделяем две роли: «получить куки» и «использовать куки». Первая
+роль — человеческая, вторая — автоматизированная. Это стандартная
+архитектура для браузерной автоматизации.
+
+### Пошаговый рецепт
+
+#### Шаг 1. Создать `.env.a` и `.env.b`
 
 **`.env.a`:**
 
 ```ini
 PORT=3000
-DEEPSEEK_EMAIL=your@email.com
-DEEPSEEK_PASSWORD=your_password
-DEEPSEEK_HEADLESS=true
 
-DEEPSEEK_STATE_PATH=./state-a.json
+# Общий state — куки DeepSeek
+DEEPSEEK_STATE_PATH=./shared-state.json
+
+# Изолированное состояние агента A
 DEEPSEEK_CHAT_STATE_PATH=./chat_state-a.json
 DEEPSEEK_API_KEY_PATH=./.api-key-a
 DEEPSEEK_UPLOAD_DIR=./uploads-a
 RAG_DATA_DIR=./rag_data-a
 
+# Recovery-флаги
 ENABLE_RESTORE=true
 ENABLE_SNAPSHOT=true
 ENABLE_RAG=true
-```
 
-**`.env.b`** — те же значения с суффиксом `b` и другим портом:
-
-```ini
-PORT=3001
-DEEPSEEK_EMAIL=your@email.com
-DEEPSEEK_PASSWORD=your_password
+# Важно: headless=true. Логина не будет.
 DEEPSEEK_HEADLESS=true
-
-DEEPSEEK_STATE_PATH=./state-b.json
-DEEPSEEK_CHAT_STATE_PATH=./chat_state-b.json
-DEEPSEEK_API_KEY_PATH=./.api-key-b
-DEEPSEEK_UPLOAD_DIR=./uploads-b
-RAG_DATA_DIR=./rag_data-b
-
-ENABLE_RESTORE=true
-ENABLE_SNAPSHOT=true
-ENABLE_RAG=true
 ```
 
-> **Ключевое.** `DEEPSEEK_EMAIL` и `DEEPSEEK_PASSWORD` **общие** — это
-> один аккаунт DeepSeek. Всё остальное — пути и порты — **разные**.
+**`.env.b`** — то же самое, но с суффиксом `b` и `PORT=3001`.
 
-Все шесть переменных, изолирующих состояние процесса, описаны в
-[Установке](installation.md#paths). Если хотя бы одна останется
-общей — процессы будут конфликтовать.
+> **Не забудьте убрать `DEEPSEEK_EMAIL` и `DEEPSEEK_PASSWORD`** из
+> этих файлов. Они не нужны, потому что логина не будет. Если они
+> останутся, и куки по какой-то причине окажутся невалидными, сервер
+> попробует авто-логин и снова попадёт в капчу.
 
-### Первый запуск — вручную, по одному
+#### Шаг 2. Получить рабочий `state.json`
 
-При первом запуске каждый процесс проходит логин в DeepSeek и
-создаёт свои файлы состояния. **Не запускайте одновременно** — два
-параллельных логина в один аккаунт могут вызвать captcha или
-rate limit.
+Здесь два пути. **Путь B (перенос куки) предпочтительнее** — он
+полностью устраняет капчу.
+
+##### Путь A: ручной логин через Playwright
 
 ```bash
-# Терминал 1
-set -a; source .env.a; set +a
-npm start
-# Дождаться "🚀 DeepSeek API server running on http://localhost:3000"
-# Ctrl+C
-
-# Пауза 10–20 секунд
-
-# Терминал 2
-set -a; source .env.b; set +a
-npm start
-# Дождаться "🚀 DeepSeek API server running on http://localhost:3001"
-# Ctrl+C
-```
-
-После этого в корне появятся:
-
-```
-state-a.json        state-b.json
-chat_state-a.json   chat_state-b.json
-.api-key-a          .api-key-b
-uploads-a/          uploads-b/
-rag_data-a/         rag_data-b/
-```
-
-### Рабочий запуск
-
-**Linux / macOS / Git Bash:**
-
-```bash
-# Терминал 1
-set -a; source .env.a; set +a
+DEEPSEEK_STATE_PATH=/tmp/fresh-state.json \
+DEEPSEEK_CHAT_STATE_PATH=/tmp/fresh-chat.json \
+DEEPSEEK_API_KEY_PATH=/tmp/fresh-key \
+DEEPSEEK_HEADLESS=false \
 npm start
 ```
 
-```bash
-# Терминал 2
-set -a; source .env.b; set +a
-npm start
+Откроется Chromium. Если капчи нет — логин пройдёт автоматически,
+`/tmp/fresh-state.json` заполнится куками. Если капча появилась —
+решите её вручную. Если она уйдёт в бесконечный цикл — переходите
+к разделу «Капча: эскалационная лестница» ниже.
+
+**Плюсы:** просто, работает «из коробки», когда везёт.
+**Минусы:** капча может убить всё.
+
+##### Путь B: перенос куки из обычного браузера (рекомендуется)
+
+**Это самый надёжный путь.** Автоматизированный браузер никогда не
+заходит на `/sign_in`.
+
+**1. Логин в обычном браузере.**
+
+Откройте Firefox (рекомендую именно его — Chrome тоже может быть уже
+«примечен» Cloudflare). Зайдите на `chat.deepseek.com`. Введите
+логин/пароль. Пройдите капчу, если появится — в обычном браузере она
+проходит без проблем.
+
+**2. Экспорт куки.**
+
+Установите расширение **Cookie-Editor** (есть для Firefox и Chrome).
+На странице `chat.deepseek.com`:
+
+- Откройте Cookie-Editor.
+- Нажмите «Export» → «JSON».
+- Скопируйте JSON в буфер обмена.
+- Сохраните его в `/tmp/cookies.json`.
+
+Формат Cookie-Editor:
+
+```json
+[
+  {
+    "name": "ds_session_id",
+    "value": "eyJ...",
+    "domain": ".deepseek.com",
+    "path": "/",
+    "expirationDate": 1812345678,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  }
+]
 ```
 
-**PowerShell:**
+**3. Конвертация в Playwright storageState.**
 
-```powershell
-# Терминал 1
-Get-Content .env.a | ForEach-Object {
-    if ($_ -match '^\s*([^#][^=]+)=(.*)$') {
-        [Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim())
-    }
+Наш `state.json` — это формат Playwright:
+
+```json
+{
+  "cookies": [ ... ],
+  "origins": []
 }
+```
+
+Конвертация одной командой `jq`:
+
+```bash
+jq '{
+  cookies: map({
+    name: .name,
+    value: .value,
+    domain: .domain,
+    path: .path,
+    expires: (.expirationDate // -1),
+    httpOnly: .httpOnly,
+    secure: .secure,
+    sameSite: (.sameSite // "Lax")
+  }),
+  origins: []
+}' /tmp/cookies.json > shared-state.json
+
+chmod 600 shared-state.json
+```
+
+**4. Проверка.**
+
+```bash
+jq '.cookies | length' shared-state.json
+jq '.cookies[].name' shared-state.json
+```
+
+Должно быть **больше 3** куки. В обычном браузере DeepSeek выставляет
+больше маркеров, чем headless Playwright. Обычно видны:
+
+- `ds_session_id` — главная сессионная кука.
+- `smidV2` — маркер устройства.
+- `__cf_bm` — Cloudflare bot management.
+- `cf_clearance` — pass Cloudflare challenge (важно!).
+
+Наличие `cf_clearance` критично: он означает, что браузер уже прошёл
+челлендж и Cloudflare готов ему доверять. Именно этого не бывает
+в headless Playwright.
+
+**5. Первый запуск.**
+
+```bash
+# Только процесс A
+set -a; source .env.a; set +a
 npm start
 ```
 
-**Вариант для продакшена — с логами и PID-файлами:**
+**Ожидаемый лог:**
 
-```bash
-set -a; source .env.a; set +a
-nohup npm start > server-a.log 2>&1 &
-echo $! > server-a.pid
-sleep 20
-
-set -a; source .env.b; set +a
-nohup npm start > server-b.log 2>&1 &
-echo $! > server-b.pid
+```
+💾 State file: /path/to/shared-state.json
+🔧 Validating environment...
+📂 Found existing session files. Attempting to restore...
+✅ Critical selectors OK
+✅ Already logged in
+💾 State saved (5 cookies, mtime ...)      ← больше 3!
+✅ Chat page loaded
+🆕 startFresh: new chat session
+✅ DeepSeek client ready!
+✅ Session restored. API key: deepseek_...
 ```
 
-Пауза 20 секунд обязательна — второй логин должен произойти
-**после** того, как первый завершился.
+**Чего быть не должно:**
+- `📌 On login page, attempting auto-login...` — куки не подхватились.
+- `🔐 Performing auto-login...` — сервер лезет в логин.
+- `❌ Validation error` — ошибка селектора или сети.
 
-### Проверка
+**6. Запуск второго процесса.**
+
+```bash
+# Terminal 2
+set -a; source .env.b; set +a
+npm start
+```
+
+**Ожидаемый лог:**
+
+```
+💾 State file: /path/to/shared-state.json
+🔧 Validating environment...
+📂 Found existing session files. Attempting to restore...
+✅ Critical selectors OK
+💾 Skipping state write (mtime ... > ...)     ← mtime-guard сработал
+✅ Already logged in
+💾 Skipping state write: file is newer         ← и второй раз
+✅ Chat page loaded
+🆕 startFresh: new chat session
+✅ DeepSeek client ready!
+✅ Session restored. API key: deepseek_...
+```
+
+Строка `💾 Skipping state write` — **это нормально**, не ошибка. Один
+процесс написал свежие куки, второй корректно отступил, чтобы не
+затереть их устаревшим слепком. Алгоритм [A6](../algorithms/session.md#a6)
+описывает эту семантику подробно.
+
+**7. Проверка изоляции.**
 
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3001/health
+
+# Ключи не пересекаются
+curl http://localhost:3000/v1/context/status -H "Authorization: Bearer $(cat .api-key-a)"
+curl http://localhost:3000/v1/context/status -H "Authorization: Bearer $(cat .api-key-b)"
+# Второй должен вернуть {"error":"Invalid API key"}
+
+# Чаты разные
+jq '.deepseek.lastChatId' chat_state-a.json
+jq '.deepseek.lastChatId' chat_state-b.json
+# Значения должны отличаться
 ```
 
-Оба должны вернуть `{"status":"ok",...}`.
-
-### Ключи для клиента
-
-Каждый процесс пишет свой ключ:
+**8. Функциональный тест.**
 
 ```bash
-KEY_A=$(cat .api-key-a)
-KEY_B=$(cat .api-key-b)
+# Запрос к A
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer $(cat .api-key-a)" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Say exactly: agent A is alive."}]}'
+
+# Запрос к B
+curl -X POST http://localhost:3001/v1/chat/completions \
+  -H "Authorization: Bearer $(cat .api-key-b)" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Say exactly: agent B is alive."}]}'
 ```
 
-Клиент хранит их в конфиге:
+Оба должны вернуть ответ с `"finish_reason":"stop"` и заполненным
+`context_status`.
 
-```python
-SERVERS = {
-    "researcher": {
-        "url": "http://localhost:3000",
-        "key_path": ".api-key-a",
-    },
-    "writer": {
-        "url": "http://localhost:3001",
-        "key_path": ".api-key-b",
-    },
-}
+**9. Ежедневная работа.**
+
+- Оба процесса работают headless, без логина.
+- Клиент отправляет запросы на соответствующие порты со своими ключами.
+- Сервер сам управляет контекстом, снапшотами, RAG — на уровне
+  каждого процесса.
+- Клиент не знает о существовании «общего state» — для него это два
+  независимых API.
+
+### Капча: эскалационная лестница
+
+Если капча всё-таки появилась и ушла в бесконечный цикл — действуйте
+по шагам, **сверху вниз**. Останавливайтесь на первом, который
+сработал.
+
+#### Уровень 1. Перенос куки из обычного браузера
+
+Это должно быть **первым шагом**, а не последним. См. «Путь B» выше.
+Никакого логина в автоматизированном браузере — просто перенос уже
+установленных куки.
+
+#### Уровень 2. Ручной логин в headless=false
+
+Если перенос невозможен (нет доступа к обычному браузеру на этой
+машине):
+
+```bash
+DEEPSEEK_STATE_PATH=/tmp/fresh.json \
+DEEPSEEK_HEADLESS=false \
+npm start
 ```
 
-Ключи не меняются между перезапусками, пока файлы `.api-key-*` на
-месте.
+Откроется Chromium. Решите капчу руками. Если проходит за 2–3
+попытки — победа.
 
-### Клиентская оркестрация
+#### Уровень 3. Свежий Chromium
+
+Если текущий Chromium уже «сожжён» Cloudflare:
+
+```bash
+# Сохраните рабочий state, если он есть
+cp state.json state.json.backup
+
+# Удалите браузер
+rm -rf browsers/
+
+# Переустановите
+mkdir -p browsers
+PLAYWRIGHT_BROWSERS_PATH=./browsers npx playwright install chromium
+
+# Попробуйте логин с ЧИСТЫМ state
+rm -f state.json
+DEEPSEEK_HEADLESS=false npm start
+```
+
+Новая установка Chromium = новый fingerprint. Иногда этого достаточно:
+Cloudflare видит «новое устройство» и снижает уровень паранойи.
+
+#### Уровень 4. Смена IP
+
+Cloudflare может блокировать не только браузер, но и IP. Переключитесь
+на:
+
+- **Мобильный хотспот** (с телефона). Это самый быстрый и надёжный
+  вариант — мобильные операторы обычно имеют «чистые» диапазоны IP
+  с точки зрения Cloudflare.
+- **VPN** — работает хуже, потому что IP многих VPN уже «примечены».
+- **Другую машину в той же сети** — не поможет, IP тот же.
+
+После смены IP повторите Уровень 2.
+
+#### Уровень 5. Удаление и перерегистрация аккаунта
+
+**Только если всё остальное не работает.**
+
+Насколько это помогает — зависит от причины. Если проблема в
+**браузере** или **IP**, удаление аккаунта не поможет: новый аккаунт
+с того же браузера и IP столкнётся с теми же проверками. Если
+проблема в **аккаунте** (Cloudflare пометил конкретно ваш аккаунт) —
+поможет.
+
+**Процесс:**
+
+1. Откройте `chat.deepseek.com` в **обычном** браузере (Firefox).
+2. Войдите (если получится — значит проблема была в automated browser).
+3. Откройте **Settings → Profile**.
+4. Прокрутите вниз — там будет **Delete account**.
+5. Удалите аккаунт. Подтверждение обычно через email-код.
+6. Дождитесь полного удаления (иногда час-два).
+7. Зарегистрируйте **новый аккаунт** с **другого email**.
+8. **Первый логин** сделайте с той машины, где будет работать
+   автоматизация, чтобы fingerprint был «связан» с новым аккаунтом.
+
+> **Важное замечание.** Cloudflare запоминает fingerprint устройств
+> на 30–90 дней. Если ваш текущий Chromium уже был помечен как
+> «automated», даже новый аккаунт может ловить капчу. В этом случае
+> помогает комбинация Уровня 3 + Уровня 4 + Уровня 5.
+
+### Почему перенос куки — реальное решение, а не костыль
+
+Многие думают: «cookie transfer — это хак, надо нормально логиниться».
+На практике это **архитектурно правильный путь** для автоматизации:
+
+- **Один логин = одна сессия = одни куки.** Мы просто делаем логин на
+  «правильном» устройстве.
+- **Cloudflare не отличает** валидные куки, перенесённые из Firefox,
+  от куки, полученных самим Playwright. Ему важен cookie-токен, а не
+  то, как он к вам попал.
+- **Не нужно эмулировать браузер** — вы и есть нормальный браузер на
+  этапе логина.
+
+Единственный минус: при экспирации куки нужно повторить экспорт.
+Это раз в 1–3 месяца, не критично.
+
+### Чего не делать
+
+- **Не пытайтесь решать капчу в цикле.** Правильные ответы,
+  отправленные с «низким trust score», будут отклоняться. Вы потратите
+  часы.
+- **Не используйте сторонние captcha-сервисы** (2captcha, CapSolver).
+  Cloudflare Turnstile сложнее, чем hCaptcha/reCAPTCHA. Даже если
+  сервис справится с челленджем, итоговый trust score останется
+  низким, и логин упадёт на следующем шаге.
+- **Не отключайте защиту через `--disable-blink-features`** — это
+  работает для старых детекторов, но Turnstile смотрит на десятки
+  других сигналов.
+
+### Что делать, когда куки истекают
+
+Куки DeepSeek живут **1–3 месяца** (в зависимости от активности
+аккаунта). Когда они истекают:
+
+**Симптомы:**
+- `⚠️ restorePrevious failed`, `startFresh` тоже не помогает.
+- `📌 On login page, attempting auto-login...` — не должно происходить
+  при shared-state.
+- `❌ Chat page did not load (mainTextarea not visible)`.
+- HTTP 401 от DeepSeek.
+
+**Действия:**
+1. Остановите оба процесса (`npx kill-port 3000 3001`).
+2. Обновите `shared-state.json` через Путь B (перенос куки).
+3. Запустите оба процесса заново.
+4. Убедитесь, что оба видят `✅ Already logged in`.
+
+История чатов и RAG-индексы не пострадают. Меняется только браузерная
+сессия.
+
+### Полный пример: два `.env`
+
+**`.env.a`:**
+
+```ini
+PORT=3000
+DEEPSEEK_STATE_PATH=./shared-state.json
+DEEPSEEK_CHAT_STATE_PATH=./chat_state-a.json
+DEEPSEEK_API_KEY_PATH=./.api-key-a
+DEEPSEEK_UPLOAD_DIR=./uploads-a
+RAG_DATA_DIR=./rag_data-a
+DEEPSEEK_HEADLESS=true
+ENABLE_RESTORE=true
+ENABLE_SNAPSHOT=true
+ENABLE_RAG=true
+```
+
+**`.env.b`:**
+
+```ini
+PORT=3001
+DEEPSEEK_STATE_PATH=./shared-state.json
+DEEPSEEK_CHAT_STATE_PATH=./chat_state-b.json
+DEEPSEEK_API_KEY_PATH=./.api-key-b
+DEEPSEEK_UPLOAD_DIR=./uploads-b
+RAG_DATA_DIR=./rag_data-b
+DEEPSEEK_HEADLESS=true
+ENABLE_RESTORE=true
+ENABLE_SNAPSHOT=true
+ENABLE_RAG=true
+```
+
+Запуск:
+
+```bash
+# Terminal 1
+set -a; source .env.a; set +a
+npm start
+
+# Terminal 2 (через 10–15 секунд)
+set -a; source .env.b; set +a
+npm start
+```
+
+Оба пишут в один `shared-state.json`. Первый сохранит куки, второй
+напечатает `💾 Skipping state write` и продолжит. Оба работают
+параллельно, каждый со своим чатом.
+
+---
+
+## Обработка ошибок в мультиагентной системе
+
+Каждый агент возвращает стандартные коды. Логика клиента зависит от
+кода:
+
+| Код | Что значит | Что делать |
+|---|---|---|
+| `200` | Успех | Продолжать |
+| `400` | Ошибка валидации запроса | Исправить запрос, не retry |
+| `401` | Ключ не совпадает с файлом | Проверить `.api-key-*` |
+| `409` | Контекст переполнен | `/v1/chat/new {restore:false}`, повторить |
+| `503` | Server Busy, сервер уходит в shutdown | Ждать перезапуска, не retry |
+| `504` | Таймаут | Retry с экспоненциальным backoff |
+
+**Про 503 в мультиагентной системе.** Один процесс может уйти в
+shutdown, второй продолжит работать. Клиент должен различать, какой
+именно агент недоступен, и маршрутизировать остальные запросы в
+живые процессы. Общий оркестратор не должен падать целиком.
+
+**Про перезапуск после 503.** Внешний супервизор (systemd, pm2,
+Docker restart policy) поднимает упавший процесс. Клиент не
+перезапускает сервер сам — он только ждёт.
+
+---
+
+## Клиентская оркестрация
 
 Клиент думает **об агентах**, не о чатах. Чаты — забота сервера.
 
@@ -327,6 +709,7 @@ def ask(agent, content, retries=3):
             )
             continue
         if r.status_code == 504:
+            import time
             time.sleep(2 ** i)
             continue
         r.raise_for_status()
@@ -345,42 +728,17 @@ def pipeline(topic):
 
 ---
 
-## Обработка ошибок в мультиагентной системе
-
-Каждый агент возвращает стандартные коды. Логика клиента зависит от
-кода:
-
-| Код | Что значит | Что делать |
-|---|---|---|
-| `200` | Успех | Продолжать |
-| `400` | Ошибка валидации запроса | Исправить запрос, не retry |
-| `401` | Ключ не совпадает с файлом | Проверить `.api-key-*` |
-| `409` | Контекст переполнен | `/v1/chat/new {restore:false}`, повторить |
-| `503` | Server Busy, сервер уходит в shutdown | Ждать перезапуска, не retry |
-| `504` | Таймаут | Retry с экспоненциальным backoff |
-
-**Про 503 в мультиагентной системе.** Один процесс может уйти в
-shutdown, второй продолжит работать. Клиент должен различать, какой
-именно агент недоступен, и маршрутизировать остальные запросы в
-живые процессы. Общий оркестратор не должен падать целиком.
-
-**Про перезапуск после 503.** Внешний супервизор (systemd, pm2,
-Docker restart policy) поднимает упавший процесс. Клиент не
-перезапускает сервер сам — он только ждёт.
-
----
-
 ## Управление процессами — кроссплатформенно
 
-Команды из документации вроде `pkill` или `lsof` работают не на всех
-платформах. Универсальный вариант:
+Команды вроде `pkill` или `lsof` работают не на всех платформах.
+Универсальный вариант:
 
 ```bash
 npx kill-port 3000 3001
 ```
 
-Работает на Linux, macOS и Windows одинаково. Убивает процессы,
-слушающие указанные порты.
+Работает на Linux, macOS и Windows. Убивает процессы, слушающие
+указанные порты.
 
 ### Остановка по PID-файлу
 
@@ -407,8 +765,6 @@ for /f %i in (server-b.pid) do taskkill /PID %i /F
 
 ### Полная очистка
 
-Если нужно начать с чистого листа:
-
 ```bash
 # Остановить оба процесса
 npx kill-port 3000 3001
@@ -416,10 +772,12 @@ npx kill-port 3000 3001
 # Удалить состояние
 rm -rf state-a.json chat_state-a.json .api-key-a uploads-a rag_data-a
 rm -rf state-b.json chat_state-b.json .api-key-b uploads-b rag_data-b
+rm -f shared-state.json
 rm -f server-a.pid server-b.pid server-a.log server-b.log
 ```
 
-При следующем запуске оба процесса зарегистрируются заново.
+При следующем запуске процесс нужно будет заново прогнать через
+перенос куки (Путь B).
 
 ---
 
@@ -443,14 +801,12 @@ rm -f server-a.pid server-b.pid server-a.log server-b.log
 
 ## Сколько агентов можно запустить
 
-Ограничения, которые нужно учитывать при масштабировании.
-
 | Ресурс | Ограничение |
 |---|---|
 | **Память** | ~500 МБ на процесс (Chromium + Node + эмбеддинги) |
 | **CPU** | Каждый Chromium активен во время запроса |
 | **DeepSeek rate limit** | Один аккаунт, один IP — все процессы делят лимит |
-| **Логины** | N процессов = N логинов в один аккаунт при старте |
+| **Логины** | Только один логин при shared-state |
 | **Порты** | Один порт на процесс |
 
 Практически: **2–5 агентов на одной машине** работают комфортно.
@@ -459,8 +815,8 @@ rm -f server-a.pid server-b.pid server-a.log server-b.log
 Если нужно больше агентов — варианты:
 
 - **Несколько аккаунтов DeepSeek.** Каждый процесс со своим
-  `DEEPSEEK_EMAIL`. Снимает ограничение rate limit, но требует
-  регистрации дополнительных аккаунтов.
+  `DEEPSEEK_STATE_PATH`. Снимает ограничение rate limit, но требует
+  регистрации дополнительных аккаунтов и переноса куки для каждого.
 - **Очередь поверх N процессов.** Клиент сам решает, какой агент
   сейчас работает, остальные ждут. Меньше параллельности, но
   предсказуемо по нагрузке.
@@ -473,16 +829,18 @@ rm -f server-a.pid server-b.pid server-a.log server-b.log
 
 1. **Один процесс = одна сессия.** Мультиагентность — через
    несколько процессов, не через один.
-2. **Изоляция через env-переменные.** Шесть путей и один порт.
-   Общие только `DEEPSEEK_EMAIL` / `DEEPSEEK_PASSWORD`.
-3. **Запуск последовательный.** Пауза 10–20 секунд между логинами.
-4. **Ключи в файлах.** `.api-key-a` / `.api-key-b`. Клиент читает оба.
-5. **Клиент думает об агентах.** Чаты, снапшоты, переходы — забота
+2. **Shared state — куки, не чаты.** `DEEPSEEK_STATE_PATH` общий,
+   всё остальное — уникальное.
+3. **Логин один раз, через обычный браузер.** Куки переносятся
+   через Cookie-Editor и одну команду `jq`.
+4. **Не воюйте с капчей.** Если она появилась в автоматизированном
+   браузере — переходите на Путь B (перенос куки). Это не костыль,
+   а архитектура.
+5. **Куки живут 1–3 месяца.** При экспирации — повторить Путь B.
+6. **Клиент думает об агентах.** Чаты, снапшоты, переходы — забота
    сервера.
-6. **Кроссплатформенно.** `npx kill-port` вместо `pkill`. PowerShell
+7. **Кроссплатформенно.** `npx kill-port` вместо `pkill`. PowerShell
    вместо `kill $(cat ...)` на Windows.
-7. **Перезапуск бесплатный.** `ENABLE_RESTORE=true` возвращает чаты
-   без правок в клиенте.
 
 ---
 
@@ -493,5 +851,9 @@ rm -f server-a.pid server-b.pid server-a.log server-b.log
 - [Управление сессией](session-management.md) — два лимита,
   деградация, обработка ошибок.
 - [Тестирование](testing.md) — наборы тестов и команды.
-- [Алгоритмы](../algorithms/index.md) — контрактные описания
-  процессов.
+- [Диагностика](troubleshooting.md) — частые проблемы, включая
+  `Skipping state write`.
+- [A1 — Client initialization](../algorithms/session.md#a1) —
+  сериализация стартовых шагов.
+- [A6 — State persistence](../algorithms/session.md#a6) —
+  mtime-guard и атомарная запись.

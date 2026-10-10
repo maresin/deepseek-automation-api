@@ -8,8 +8,8 @@
 ## A1. Инициализация клиента
 
 **Статус:** active
-**Дата фиксации:** 2026-09-30
-**Версия:** 2
+**Дата фиксации:** 2026-10-10
+**Версия:** 3
 
 ### Назначение
 
@@ -32,12 +32,14 @@
 
 ```
 1. Если клиент уже инициализирован — выход.
-2. Прочитать state.json (cookies браузера).
+2. Прочитать state.json (cookies браузера), запомнить mtime.
 3. Запустить Chromium, открыть контекст с сохранёнными cookies.
 4. Если cookies есть — открыть chat.deepseek.com.
    Иначе — /sign_in.
 5. Пройти аутентификацию (см. AuthManager.ensureAuthenticated).
-6. Сохранить обновлённое состояние в state.json.
+   didLogin := был ли выполнен свежий логин.
+6. Сохранить состояние в state.json:
+   saveState(didLogin) — force при свежем логине, иначе с mtime-guard.
 7. Проверить, что страница чата загружена (виден `mainTextarea`).
    Язык интерфейса не проверяется и не переключается — он форсируется
    на уровне browser context (`locale: 'en-US'`, `Accept-Language`).
@@ -88,10 +90,46 @@ General → Language. Но этот путь содержал логически
 `webSearchButton`, `continueButton`, `settingsMenuItem`) работают
 под этой инвариантой.
 
+**Почему три шага старта сериализованы.** В ранних версиях `server.js`
+запускал `validateEnvironment`, `autoRegisterIfNeeded` и
+`initFromExistingFiles` параллельно через `.catch()` и `setTimeout()`.
+Все три могли писать `state.json`; `initFromExistingFiles` мог прочитать
+файл до того, как `validateEnvironment` обновит куки. Начиная с A1 v3
+шаги выполняются строго последовательно в одной async-функции:
+
+```
+1. validateEnvironment   — проверка селекторов и, при необходимости,
+                           авто-логин. Запись state.json защищена mtime-guard.
+2. autoRegisterIfNeeded  — только если ни .api-key, ни state.json
+                           не существуют. Не выполняется, если шаг 1
+                           уже создал сессию.
+3. initFromExistingFiles — читает финальный файл на диске и поднимает
+                           клиента с ENABLE_RESTORE-семантикой.
+```
+
+**Почему force-запись только при свежем логине.**
+`ensureAuthenticated` возвращает `boolean didLogin`: `true`, если был
+выполнен авто- или ручной логин, `false`, если сессия уже валидна.
+`saveState(didLogin)` использует это значение. Свежий логин
+гарантированно даёт cookies новее всего, что есть на диске — force-запись
+уместна. «Уже залогинен» не даёт никаких новых данных — запись проходит
+через обычный mtime-guard и в shared-state сценарии отступает перед
+более свежим слепком другого процесса.
+
 ### Реализация
 
 - `src/DeepSeekClient.ts` → `initialize()`
 - `src/auth/AuthManager.ts` → `ensureAuthenticated()`
+- `server.js` → `validateEnvironment()`, `autoRegisterIfNeeded()`, `initFromExistingFiles()`
+
+### История
+
+- v1 (2026-09-18): первичная фиксация.
+- v2 (2026-09-30): удалён `ensureEnglishLanguage`. Язык форсируется через
+  `Accept-Language` в browser context.
+- v3 (2026-10-10): сериализация стартовых шагов; `ensureAuthenticated`
+  возвращает `didLogin`; force-запись state.json только после реального
+  логина.
 
 ---
 
@@ -359,14 +397,17 @@ restoreChatById(chatId):
 ---
 
 ## A6. Хранение и загрузка состояния {#a6}
+
 **Статус:** active
-**Дата фиксации:** 2026-09-18
-**Версия:** 2 (разделение state.json / chat_state.json)
+**Дата фиксации:** 2026-10-10
+**Версия:** 3 (mtime-guard и атомарная запись)
 
 ### Назначение
 
 Разделить браузерное состояние (cookies) и состояние чата (id, счётчики)
-на два файла, чтобы их жизненные циклы не пересекались.
+на два файла, чтобы их жизненные циклы не пересекались; обеспечить
+безопасную запись при одновременном использовании одного state.json
+двумя процессами.
 
 ### Входные данные
 
@@ -382,6 +423,7 @@ restoreChatById(chatId):
 ### Выходные данные
 
 - `saveChatState()` — запись в `chat_state.json`.
+- `saveState(force)` — запись в `state.json` с mtime-guard или без него.
 - `loadChatState()` — чтение блока `deepseek`.
 
 ### Псевдокод
@@ -396,6 +438,32 @@ loadChatState():
   Иначе — попробовать прочитать legacy-блок deepseek из state.json
     (миграция с v1).
   Вернуть null, если оба источника пусты.
+
+loadState():
+  Если state.json существует:
+     stateLoadedAtMs := mtime файла
+     Прочитать JSON.
+  Иначе:
+     stateLoadedAtMs := 0
+
+saveState(force):
+  Если force = true:
+     loadedAt := 0
+  Иначе:
+     loadedAt := stateLoadedAtMs (запомнен при loadState)
+
+  writeStateAtomically(statePath, loadedAt, state)
+
+writeStateAtomically(statePath, loadedAt, state):
+  Если loadedAt > 0:
+     stat := statSync(statePath)
+     Если stat.mtimeMs > loadedAt:
+        Логировать "Skipping state write: file is newer"
+        Вернуть false     // другой процесс записал более свежий слепок
+
+  tmpPath := statePath + ".tmp"
+  writeFileSync(tmpPath, JSON.stringify(state))
+  renameSync(tmpPath, statePath)   // атомарная замена
 ```
 
 ### Граничные случаи
@@ -405,6 +473,14 @@ loadChatState():
 - **Legacy-блок в state.json.** Прочитан, но при следующей записи
   `saveChatState` создаст chat_state.json; старый блок в state.json
   останется мусором до следующей очистки. Это допустимо.
+- **Одновременный запуск двух процессов с общим statePath.** Первый
+  записавший выигрывает; второй получает `Skipping`. Ни один не видит
+  частично записанный файл — `renameSync` атомарен.
+- **Логин после того, как другой процесс обновил файл.** `saveState(true)`
+  вызывается только при `didLogin = true` (см. A1 v3). Force-запись
+  обходит guard и сохраняет свежие куки.
+- **Файл исчез между чтением и записью.** Guard пропускает запись
+  (нет `statSync` — нет конфликта). Это допустимо: файл был удалён внешне.
 
 ### Почему именно так
 
@@ -418,12 +494,43 @@ loadChatState():
 state.json, `loadChatState` подхватит legacy-блок, а первый
 `saveChatState` перенесёт данные в новый формат.
 
+**Почему mtime-guard, а не файловая блокировка.** Запись в `state.json`
+происходит только в момент инициализации клиента — окно ~10–30 секунд.
+Блокировка (lockfile) защищала бы от гонок, которых в 99% случаев
+не бывает, и добавляла бы риск «зомби-локов» при SIGKILL. mtime-guard
+решает реальную проблему (перезапись свежего слепка старым) без
+накладных расходов.
+
+**Почему `renameSync`, а не `writeFileSync`.** Прямая запись не атомарна:
+процесс-читатель может открыть файл посередине записи и получить
+частичный JSON. `renameSync` на POSIX и NTFS атомарен — читатель видит
+либо старую версию, либо новую, но никогда смешанную.
+
+**Почему force-запись только после реального логина.** При
+`ensureAuthenticated` возможны два исхода: «уже залогинен» (куки в
+памяти не отличаются от файла) и «только что залогинен» (куки в
+памяти строго свежее). Force-запись имеет смысл только во втором
+случае. `AuthManager.ensureAuthenticated` возвращает `boolean
+didLogin`, и `saveState(didLogin)` использует это значение. Ранние
+версии вызывали `saveState(true)` безусловно — это позволяло
+процессу перезаписать более свежий слепок, полученный другим
+процессом после его собственного логина.
+
 ### Реализация
 
-- `src/DeepSeekClient.ts` → `saveChatState()`, `loadChatState()`,
-  `clearPersistentState()`
+- `src/DeepSeekClient.ts` → `saveState()`, `loadState()`, `saveChatState()`,
+  `loadChatState()`, `clearPersistentState()`
+- `src/browser/BrowserManager.ts` → `saveState()`, `loadState()`
+- `server.js` → `writeStateAtomically()`, `readStateMtime()`
 - `server-modules/utils.js` → пути файлов, `deleteSessionFiles()`
 - `server-modules/clientConfig.js` → `statePath`, `chatStatePath`
+
+### История
+
+- v1 (2026-09-18): разделение state.json / chat_state.json.
+- v2 (2026-09-18): миграция legacy-блока из state.json.
+- v3 (2026-10-10): mtime-guard для конкурентной записи, атомарная
+  замена через renameSync, force-запись только после реального логина.
 
 ---
 
@@ -433,9 +540,10 @@ state.json, `loadChatState` подхватит legacy-блок, а первый
 |---|---|---|---|
 | A1 | 1 | 2026-09-18 | Первичная фиксация |
 | A1 | 1 → 2 | 2026-09-30 | Удалён `ensureEnglishLanguage`. Язык форсируется через `Accept-Language` в browser context |
+| A1 | 2 → 3 | 2026-10-10 | Сериализация стартовых шагов; `didLogin`-флаг; force-запись state.json только после реального логина |
 | A2 | 1 | 2026-09-18 | Первичная фиксация |
 | A3 | 1 → 2 | 2026-09-18 | Добавлена очистка RAG-индекса |
 | A4 | 1 → 2 | 2026-09-18 | Snapshot и RAG разделены, файл вместо текста |
 | A5 | 1 | 2026-09-18 | Первичная фиксация |
 | A6 | 1 → 2 | 2026-09-18 | Разделение state.json / chat_state.json |
-
+| A6 | 2 → 3 | 2026-10-10 | mtime-guard, atomic rename, force только после логина |

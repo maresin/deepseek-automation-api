@@ -1,5 +1,39 @@
 # Журнал изменений проекта
 
+## 2026-10-10 — shared state и конкурентная запись
+
+### Изменения в коде
+
+- **mtime-guard для `state.json`.** `BrowserManager.saveState` принимает
+  `loadedAtMs` и отказывается писать, если файл новее. Атомарная замена
+  через `.tmp` + `renameSync`.
+- **`writeStateAtomically` в `server.js`.** Аналогичная защита на пути
+  `validateEnvironment`.
+- **Сериализация старта.** `validateEnvironment` → `autoRegisterIfNeeded`
+  → `initFromExistingFiles` выполняются строго последовательно, а не
+  параллельно.
+- **`AuthManager.ensureAuthenticated` возвращает `boolean`.** Force-запись
+  state только при реальном логине.
+- **Устранён хардкод `'state.json'` в `server.js`.** Путь резолвится
+  из `DEEPSEEK_STATE_PATH` через переменную `STATE_PATH`.
+- **`getStatePath` в `paths.ts` учитывает `DEEPSEEK_STATE_PATH`.**
+  Ранее функция игнорировала переменную.
+
+### Что это даёт
+
+Два экземпляра API могут использовать один `state.json` (shared-state
+сценарий для мультиагентных приложений). Куки сохраняются один раз —
+при первом ручном логине — и переиспользуются обоими процессами.
+Guard предотвращает откат к устаревшему слепку.
+
+### Документация
+
+- [A6](../algorithms/session.md#a6) → версия 3: mtime-guard, атомарная запись.
+- [A1](../algorithms/session.md#a1) → версия 3: сериализация старта.
+- Новый раздел «Общий state.json» в [Построении приложений](../guides/building-applications.md).
+- Новая запись в [Диагностике](../guides/troubleshooting.md): `Skipping state write`.
+- Уточнение про `npm run clean` в [Установке](../guides/installation.md).
+
 ## 2026-09-18 — финальная версия для документации
 
 ### Изменения в коде

@@ -93,6 +93,22 @@ npm run test:rag
 
 **Решение:** ожидаемо. Второй и последующие запросы быстрее.
 
+### «Skipping state write» в логах при старте
+
+**Симптом:** при запуске в логе появляется
+
+```
+💾 Skipping state write: file is newer (mtime ... > ...)
+```
+
+**Причина:** два процесса используют общий `DEEPSEEK_STATE_PATH`.
+Один из них записал состояние после того, как второй прочитал файл.
+mtime-guard предотвращает перезапись более свежего слепка старым.
+
+**Решение:** ничего делать не нужно. Это корректное поведение.
+Подробности — в [A6](../algorithms/session.md#a6) и в разделе
+«Общий state.json» в [Построении приложений](building-applications.md).
+
 ### Браузер открывается при старте
 
 **Симптом:** всплывает окно Chromium.
@@ -232,6 +248,9 @@ ENABLE_SNAPSHOT=false ENABLE_RAG=false npm start
 | `✅ Response sent in Nms` | Успешный ответ |
 | `🚫 DeepSeek server busy — shutting down` | ServerBusyError |
 | `❌ Chat route error:` | Необработанная ошибка |
+| `💾 State file: ...` | Resolved путь к state.json при старте |
+| `💾 State saved (N cookies, mtime ...)` | Успешная запись state |
+| `💾 Skipping state write ...` | Guard предотвратил перезапись |
 
 ## Перезапуск с нуля
 
@@ -242,6 +261,12 @@ npm start
 
 Удаляет `state.json`, `chat_state.json`, `.api-key`, `uploads/`,
 `rag_data/`. Требуется повторная регистрация.
+
+> **Важно.** `npm run clean` удаляет файлы только по путям по умолчанию.
+> Если вы переопределили `DEEPSEEK_STATE_PATH`,
+> `DEEPSEEK_CHAT_STATE_PATH`, `DEEPSEEK_API_KEY_PATH`,
+> `DEEPSEEK_UPLOAD_DIR` или `RAG_DATA_DIR`, удалите файлы вручную —
+> команда их не тронет.
 
 ## Диагностические команды
 
