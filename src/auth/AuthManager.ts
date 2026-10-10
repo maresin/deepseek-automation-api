@@ -31,16 +31,12 @@ export class AuthManager {
      * @param email    - DeepSeek account email. Optional.
      * @param password - DeepSeek account password. Optional.
      */
-    async ensureAuthenticated(email?: string, password?: string): Promise<void> {
+    async ensureAuthenticated(email?: string, password?: string): Promise<boolean> {
         const page = this.browserManager.page!;
 
-        // DeepSeek's sign-in page performs a client-side redirect after
-        // DOMContentLoaded. A page.$() call issued during that transition
-        // throws "Execution context was destroyed". Wait for the network
-        // to settle, then retry the presence check a few times.
         try {
             await page.waitForLoadState('networkidle', { timeout: 15000 });
-        } catch { /* proceed with whatever state we have */ }
+        } catch { /* proceed */ }
 
         let hasChat = false;
         for (let attempt = 0; attempt < 5; attempt++) {
@@ -58,21 +54,22 @@ export class AuthManager {
 
         if (hasChat) {
             console.log('✅ Already logged in');
-            return;
+            return false;                       // ← логина не было
         }
 
         const currentUrl = page.url();
         if (currentUrl.includes(Selectors.signInPage)) {
             if (email && password) {
                 await this.performAutoLogin(email, password);
+                return true;                    // ← был логин
             } else {
                 console.log('👤 Manual login mode - waiting for user...');
                 await page.waitForSelector(Selectors.mainTextarea, { timeout: 120000 });
+                return true;                    // ← был ручной логин
             }
         } else {
-            // We are somewhere else — go to the sign-in page first.
             await this.browserManager.goto('https://chat.deepseek.com/sign_in');
-            await this.ensureAuthenticated(email, password);
+            return this.ensureAuthenticated(email, password);
         }
     }
 

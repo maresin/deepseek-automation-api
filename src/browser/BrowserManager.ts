@@ -133,15 +133,52 @@ export class BrowserManager {
     }
 
     /**
-     * Persist the current browser storage state to disk.
+     * Persist the browser storage state to disk.
      *
-     * @param statePath - Path to the state.json file.
+     * Two safeguards against concurrent writers (relevant when two
+     * agents share a single DEEPSEEK_STATE_PATH):
+     *
+     *   1. mtime guard. If `loadedAtMs` is non-zero and the file's
+     *      mtime is newer than that value, another process wrote a
+     *      fresher copy after we read ours. Skip the write rather
+     *      than clobber it.
+     *
+     *   2. Atomic replace. Write to `<path>.tmp`, then rename. On
+     *      POSIX and NTFS rename is atomic, so a concurrent reader
+     *      never observes a half-written file.
+     *
+     * Callers that intentionally produce the freshest possible state
+     * (the login flow) pass `loadedAtMs = 0` to force the write.
+     *
+     * @param statePath   - Path to state.json.
+     * @param loadedAtMs  - mtime observed when the state was read.
+     *                      0 means "unconditional write".
+     * @returns true if the state was written, false if skipped.
      */
-    async saveState(statePath: string): Promise<void> {
-        if (!this.context) return;
+    async saveState(statePath: string, loadedAtMs: number = 0): Promise<boolean> {
+        if (!this.context) return false;
+
+        if (loadedAtMs > 0) {
+            try {
+                const stat = fs.statSync(statePath);
+                if (stat.mtimeMs > loadedAtMs) {
+                    console.log(
+                        `💾 Skipping state write: file is newer ` +
+                        `(mtime ${stat.mtimeMs} > ${loadedAtMs})`
+                    );
+                    return false;
+                }
+            } catch {
+                // File disappeared between read and write — safe to write.
+            }
+        }
+
         const state = await this.context.storageState();
-        fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+        const tmp = statePath + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+        fs.renameSync(tmp, statePath);
         console.log(`💾 State saved (${state.cookies?.length || 0} cookies)`);
+        return true;
     }
 
     /**

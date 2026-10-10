@@ -112,11 +112,16 @@ export function getChromiumExecutablePath(): string {
 }
 
 /**
- * Absolute path to state.json, stored next to the ./browsers directory.
+ * Absolute path to the browser state file.
+ *
+ * Respects DEEPSEEK_STATE_PATH. Defaults to ./state.json in the
+ * project root. Resolution matches server-modules/utils.js so that
+ * both layers agree on the same file.
  */
 export function getStatePath(): string {
-    const browsersPath = getBrowsersPath();
-    return path.join(browsersPath, '..', 'state.json');
+    return process.env.DEEPSEEK_STATE_PATH
+        ? path.resolve(process.env.DEEPSEEK_STATE_PATH)
+        : path.join(process.cwd(), 'state.json');
 }
 
 /**

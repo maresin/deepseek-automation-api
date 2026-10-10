@@ -20,6 +20,61 @@ const singleRoute = require('./server-modules/routes/single.js');
 const { Selectors } = require('./dist/browser/Selectors.js');
 require('dotenv').config();
 
+// ============================================================
+// STATE FILE HELPERS — mtime-guarded atomic write
+// ============================================================
+//
+// The shared-state scenario (two agents, one state.json) makes
+// last-writer-wins the wrong policy: a process that read the
+// file at T=0 can overwrite a fresher copy written at T=5.
+//
+// readStateMtime() records the mtime observed at read time.
+// writeStateAtomically() refuses to write if the file has been
+// modified since — meaning another process already wrote a
+// fresher copy. The write itself is atomic: write to .tmp, then
+// rename. renameSync is atomic on POSIX and on NTFS, so a
+// concurrent reader never observes a partial file.
+
+const readStateMtime = (statePath) => {
+    try {
+        return fs.statSync(statePath).mtimeMs;
+    } catch {
+        return 0; // file does not exist yet
+    }
+};
+
+const writeStateAtomically = (statePath, loadedAtMs, state) => {
+    if (loadedAtMs > 0) {
+        try {
+            const stat = fs.statSync(statePath);
+            if (stat.mtimeMs > loadedAtMs) {
+                console.log(`💾 Skipping state write (mtime ${stat.mtimeMs} > ${loadedAtMs})`);
+                return false;
+            }
+        } catch {}
+    }
+
+    const tmp = statePath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, statePath);
+    console.log(`💾 State saved (${state.cookies?.length || 0} cookies, mtime ${Date.now()})`);
+    return true;
+};
+
+// ============================================================
+// RESOLVED PATHS
+// ============================================================
+// Centralized path resolution. Every write to the browser state
+// file must go through STATE_PATH — otherwise DEEPSEEK_STATE_PATH
+// is silently ignored on the startup validation path, and two
+// agents configured for a shared state file end up writing to
+// ./state.json in their respective cwd.
+const STATE_PATH = process.env.DEEPSEEK_STATE_PATH
+    ? require('path').resolve(process.env.DEEPSEEK_STATE_PATH)
+    : require('path').join(process.cwd(), 'state.json');
+
+console.log(`💾 State file: ${STATE_PATH}`);
+
 const app = express();
 const { getUploadsDir } = require('./dist/utils/paths.js');
 const upload = multer({ dest: getUploadsDir() });
@@ -200,7 +255,10 @@ async function performAutoLogin(page, email, password) {
 
         const context = page.context();
         const state = await context.storageState();
-        fs.writeFileSync('state.json', JSON.stringify(state, null, 2));
+        // The login flow always produces the freshest possible cookies,
+        // so we do NOT pass a mtime guard here — this write is
+        // unconditional and wins over any concurrent writer.
+        writeStateAtomically(STATE_PATH, 0, state);
         console.log('💾 State saved after auto-login');
 
         return true;
@@ -234,10 +292,11 @@ async function validateEnvironment() {
 
     let browser;
     let context;
+    let stateLoadedAtMs = readStateMtime(STATE_PATH);
     try {
         browser = await chromium.launch({ headless: true, executablePath: getChromiumExecutablePath() });
         context = await browser.newContext({
-            storageState: 'state.json',
+            storageState: STATE_PATH,
             locale: 'en-US',
             extraHTTPHeaders: {
                 'Accept-Language': 'en-US,en;q=0.9',
@@ -279,7 +338,7 @@ async function validateEnvironment() {
 
         if (context) {
             const state = await context.storageState();
-            fs.writeFileSync('state.json', JSON.stringify(state, null, 2));
+            writeStateAtomically(STATE_PATH, stateLoadedAtMs, state);
         }
 
     } catch (err) {
@@ -365,9 +424,6 @@ server.on('error', (err) => {
     throw err;
 });
 
-// Validation and auto-registration run only after the port is bound.
-validateEnvironment().catch(console.error);
-
 // ============================================================
 // AUTO-REGISTRATION (if credentials in .env)
 // ============================================================
@@ -392,5 +448,48 @@ async function autoRegisterIfNeeded() {
     await registerRoute(req, res);
 }
 
-setTimeout(() => autoRegisterIfNeeded().catch(console.error), 1000);
-initFromExistingFiles().catch(console.error);
+// ============================================================
+// STARTUP SEQUENCE
+// ============================================================
+//
+// The three startup steps are ordered explicitly. Each step may
+// write DEEPSEEK_STATE_PATH, so running them in parallel — as the
+// previous version did with .catch() and setTimeout() — creates
+// a race: initFromExistingFiles could read the state file before
+// validateEnvironment had a chance to refresh it, leaving the
+// in-memory client with stale cookies while a fresher copy
+// landed on disk moments later.
+//
+//   1. validateEnvironment  — selector check; performs auto-login
+//                             when cookies are missing or expired.
+//                             Its writes are mtime-guarded.
+//   2. autoRegisterIfNeeded — only when neither .api-key nor
+//                             state.json exist. Never runs if
+//                             step 1 produced a session.
+//   3. initFromExistingFiles — reads the final on-disk state and
+//                             brings up the client with ENABLE_RESTORE
+//                             semantics.
+//
+// A failure in any step is logged but does not abort the sequence:
+// the HTTP server is already listening and a later /v1/register
+// call can still recover the process.
+
+(async () => {
+    try {
+        await validateEnvironment();
+    } catch (err) {
+        console.error('❌ validateEnvironment failed:', err);
+    }
+
+    try {
+        await autoRegisterIfNeeded();
+    } catch (err) {
+        console.error('❌ autoRegisterIfNeeded failed:', err);
+    }
+
+    try {
+        await initFromExistingFiles();
+    } catch (err) {
+        console.error('❌ initFromExistingFiles failed:', err);
+    }
+})();

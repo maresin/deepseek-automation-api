@@ -11,17 +11,22 @@ browsers/
 
 # Session and key files
 state.json
+state*.json
+shared-state.json
+chat_state*.json
 chat_state.json
 
-state_*.json
+*.tmp
 .api-key*
 .deepseek-creds.json
 context_stats.json
 context_snapshot.json
 rag_data/
+rag_data-*/
 
 # Uploaded temporary files
 uploads/
+uploads-*/
 
 # Logs
 *.log
@@ -40,18 +45,23 @@ Thumbs.db
 # Environment
 .env
 .env.local
+.env.*
 
-#Tests
+# Tests
 test-report.json
+
+# Multi-agent example runtime
+examples/multi-agent/.env.a
+examples/multi-agent/.env.b
+examples/multi-agent/agent-*.pid
+examples/multi-agent/uploads-*/
+examples/multi-agent/rag_data-*/
+
+# Generic backups
+*.backup
 
 # Other
 .ARCHIVE/
 scripts/
 directory_structure.txt
 context_for_new_chat.txt
-
-
-
-
-
-

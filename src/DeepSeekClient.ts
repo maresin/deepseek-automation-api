@@ -54,6 +54,7 @@ export class DeepSeekClient {
     private chatStarted: boolean = false;
     private statePath: string;      // browser state (Playwright)
     private chatStatePath: string;  // chat state (DeepSeek)
+    private stateLoadedAtMs: number = 0;
 
     private systemPromptsSent: { tools: boolean; multiRole: boolean } = {
         tools: false,
@@ -353,8 +354,14 @@ export class DeepSeekClient {
         }
         // No fixed pause here: ensureAuthenticated waits for the network to
         // settle before probing.
-        await this.authManager.ensureAuthenticated(this.config.email, this.config.password);
-        await this.saveState();
+        const didLogin = await this.authManager.ensureAuthenticated(
+            this.config.email,
+            this.config.password
+        );
+        // ensureAuthenticated may have just performed a fresh login, in which
+        // case the in-memory cookies are newer than anything on disk. Force
+        // the write so that a concurrent writer cannot block it.
+        await this.saveState(didLogin); 
 
         this.page = this.browserManager.page;
 
@@ -382,13 +389,32 @@ export class DeepSeekClient {
         console.log('✅ DeepSeek client ready!');
     }
 
-    async saveState(): Promise<void> {
+    /**
+     * Persist the browser state to disk.
+     *
+     * @param force - When true, skip the mtime guard and write
+     *                unconditionally. Used immediately after a login
+     *                flow, where the freshly produced cookies are by
+     *                definition newer than anything another process
+     *                could have written.
+     */
+    async saveState(force: boolean = false): Promise<void> {
         const statePath = this.config.statePath || './state.json';
-        await this.browserManager.saveState(statePath);
+        const loadedAt = force ? 0 : this.stateLoadedAtMs;
+        await this.browserManager.saveState(statePath, loadedAt);
     }
 
     private async loadState(): Promise<any> {
         const statePath = this.config.statePath || './state.json';
+
+        // Record the mtime at read time. saveState() uses this to
+        // detect concurrent writers.
+        try {
+            this.stateLoadedAtMs = fs.statSync(statePath).mtimeMs;
+        } catch {
+            this.stateLoadedAtMs = 0;
+        }
+
         return await this.browserManager.loadState(statePath);
     }
 
