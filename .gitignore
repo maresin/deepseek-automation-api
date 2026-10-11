@@ -56,6 +56,7 @@ examples/multi-agent/.env.b
 examples/multi-agent/agent-*.pid
 examples/multi-agent/uploads-*/
 examples/multi-agent/rag_data-*/
+deepseek-agents/
 
 # Generic backups
 *.backup

@@ -19,22 +19,22 @@ how you will consume the API.
 ## Prerequisites
 
 - **Running server.** See [installation](../docs/guides/installation.md).
-  ```bash
-  npm start
-  ```
+    ```bash
+    npm start
+    ```
 
 - **Python:** 3.8+, `requests`
-  ```bash
-  pip install requests
-  ```
+    ```bash
+    pip install requests
+    ```
 
 - **JavaScript:** Node.js 18+ (native `fetch`, `FormData`, `Blob`,
   top-level `await`)
 
 - **cURL:** `bash`, `curl`, optionally `jq` for pretty output.
-  The `.sh` files are reference commands, not a runnable pipeline. On
-  Windows, run them in Git Bash or WSL, or copy individual `curl`
-  commands into PowerShell / cmd.
+    The `.sh` files are reference commands, not a runnable pipeline. On
+    Windows, run them in Git Bash or WSL, or copy individual `curl`
+    commands into PowerShell / cmd.
 
 The server URL can be overridden via `DEEPSEEK_BASE_URL` (default:
 `http://localhost:3000`).
@@ -95,7 +95,7 @@ cat examples/curl/01_getting_started.sh
 **Separately:**
 | Directory | Covers |
 |---|---|
-| [`multi-agent/`](multi-agent/README.md) | Two agents, one DeepSeek account, shared cookie session, no captcha |
+| [`two-agent-pipeline/`](two-agent-pipeline/README.md) | Client orchestrating two agents in a researcher/writer pipeline |
 
 Every example exists in three languages:
 
@@ -132,12 +132,12 @@ When a chat reaches the context limit, the server transitions to a new
 chat. This is **graceful degradation**, not a seamless continuation:
 
 - **Snapshot** transfers a compressed summary (~10% of the limit).
-  Everything that did not fit in the summary is lost.
+    Everything that did not fit in the summary is lost.
 - **RAG** transfers the top-5 fragments semantically close to the
-  current query. Fragments unrelated to the current topic do not
-  surface.
+    current query. Fragments unrelated to the current topic do not
+    surface.
 - **Both** combine, but the model still treats the transferred data as
-  a **document**, not as its own memory.
+    a **document**, not as its own memory.
 
 The practical consequence: after a transition you cannot rely on
 "it remembers everything." Critical facts must either live in the
@@ -147,14 +147,14 @@ The practical consequence: after a transition you cannot rely on
 
 - Monitor `context_status` on every response.
 - Handle **HTTP 409** (`context_exhausted`) — read `error.recovery`,
-  call `POST /v1/chat/new`, retry the original request.
+    call `POST /v1/chat/new`, retry the original request.
 - Handle **HTTP 503** (`server_busy`) — save state, wait for restart.
-  Do **not** retry; the server is shutting down by design.
+    Do **not** retry; the server is shutting down by design.
 - Handle **HTTP 401** — re-register via `/v1/register`.
 - Handle **HTTP 504** — retry with exponential backoff.
 - Understand the difference between the **estimated** limit
-  (`chars_limit`) and the **real** limit
-  (`deepseek_length_limit.readable_percent`).
+    (`chars_limit`) and the **real** limit
+    (`deepseek_length_limit.readable_percent`).
 
 Full discussion: [Session management](../docs/guides/session-management.md).
 
@@ -193,32 +193,36 @@ Full discussion: [Session management](../docs/guides/session-management.md).
 | Fresh vs restore chat | 05 |
 | Temporary chat | 05 |
 
-## Multi-agent deployment
+## Multi-agent deployments
 
-The `multi-agent/` directory contains a working example of two
-independent agents sharing a single DeepSeek cookie session:
+For multi-agent setups, use the generator in the API repository:
 
-- One login, one cookie file (`shared-state.json`).
-- Two processes, two ports, two isolated chats.
-- No captcha in the automated browser (login happens in Firefox).
-- A working two-agent pipeline (`demo_client.py`) — researcher drafts,
-  writer critiques, both iterate.
+    cd /path/to/deepseek-automation-api
+    ./tools/make-multi-agent.sh ~/my-project --agents 3
 
-See [`multi-agent/README.md`](multi-agent/README.md) for the full
-recipe, or [`docs/guides/building-applications.md`](../docs/guides/building-applications.md)
-for the architectural discussion.
+It produces a self-contained `deepseek-agents/` directory with three
+agents, start/stop/status scripts, and a README containing the API
+keys.
+
+See [README — Multi-agent deployments](../../README.md#multi-agent-deployments)
+for the full procedure, or
+[`docs/guides/building-applications.md`](../../docs/guides/building-applications.md#мультиагентное-приложение)
+for the architecture.
+
+The `two-agent-pipeline/` example shows a client that talks to two
+agents produced by the generator.
 
 ## Related documentation
 
 - [Installation](../docs/guides/installation.md) — requirements, `.env`,
-  first launch.
+    first launch.
 - [Usage](../docs/guides/usage.md) — endpoint examples, context status,
-  degradation, scenarios.
+    degradation, scenarios.
 - [Session management](../docs/guides/session-management.md) — full
-  client-side protocol, two limits, error codes, degradation.
+    client-side protocol, two limits, error codes, degradation.
 - [API endpoints](../docs/api/endpoints.md) — full HTTP reference.
 - [Algorithms](../docs/algorithms/index.md) — contract descriptions of
-  every process in the API.
+    every process in the API.
 
 ## Troubleshooting
 
