@@ -3,9 +3,12 @@
  * @file src/utils/prompts.ts
  * Unified loader for prompt files.
  *
- * All prompt files live in prompts/ by default, but the loader also accepts
- * absolute or project-relative paths, which is required for the system prompt
- * (its path is configurable via DEEPSEEK_SYSTEM_PROMPT_PATH).
+ * Prompt files live under <api-root>/prompts/. Their location is
+ * resolved relative to THIS MODULE, not to the process working
+ * directory. This matters for multi-agent deployments: each agent
+ * runs in its own subdirectory (agents/agent-N/), so process.cwd()
+ * points there, not to the API root. A cwd-relative lookup would
+ * fail to find prompts even though they are installed correctly.
  *
  * Resolution order for a missing or unreadable file:
  *   1. Return options.fallback if provided.
@@ -17,22 +20,33 @@ import fs from 'fs';
 import path from 'path';
 
 /**
+ * Absolute path to the API root directory.
+ *
+ * This file is at <api-root>/src/utils/prompts.ts in development and
+ * at <api-root>/dist/utils/prompts.js in production. In both cases
+ * two levels up from __dirname is the API root.
+ */
+const API_ROOT = path.resolve(__dirname, '..', '..');
+
+/**
  * Resolve the full path to a prompt file.
  *
- * If the input contains a path separator, it is treated as a project-relative
- * or absolute path and used as-is. Otherwise it is resolved inside the
- * project's prompts/ directory.
+ * If the input contains a path separator, it is treated as an
+ * API-root-relative or absolute path. Otherwise it is resolved
+ * inside the API's prompts/ directory.
  *
- * @param nameOrPath - Prompt file name (e.g. "system_prompt.txt") or a path.
+ * @param nameOrPath - Prompt file name (e.g. "tools_prompt.txt")
+ *                     or a path relative to the API root.
  * @returns Absolute path to the prompt file.
  */
 export function resolvePromptPath(nameOrPath: string): string {
-    if (nameOrPath.includes('/') || nameOrPath.includes('\\')) {
-        return path.isAbsolute(nameOrPath)
-            ? nameOrPath
-            : path.join(process.cwd(), nameOrPath);
+    if (path.isAbsolute(nameOrPath)) {
+        return nameOrPath;
     }
-    return path.join(process.cwd(), 'prompts', nameOrPath);
+    if (nameOrPath.includes('/') || nameOrPath.includes('\\')) {
+        return path.join(API_ROOT, nameOrPath);
+    }
+    return path.join(API_ROOT, 'prompts', nameOrPath);
 }
 
 export interface LoadPromptOptions {
@@ -45,8 +59,8 @@ export interface LoadPromptOptions {
 /**
  * Load a prompt file with a unified fallback policy.
  *
- * The returned string is trimmed. See the module header for the resolution
- * order when the file is absent or unreadable.
+ * The returned string is trimmed. See the module header for the
+ * resolution order when the file is absent or unreadable.
  *
  * @param nameOrPath - Prompt file name or path.
  * @param options - Fallback text and required-mode flag.
