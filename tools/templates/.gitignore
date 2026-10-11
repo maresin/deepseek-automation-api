@@ -1,0 +1,18 @@
+# Runtime files inside deepseek-agents/.
+#
+# You may prefer to ignore this whole directory in your project's
+# .gitignore. If you keep it under version control, at least keep
+# these files out of the repository.
+
+shared-state.json
+
+agents/*/.api-key
+agents/*/chat_state.json
+agents/*/uploads/
+agents/*/rag_data/
+agents/*/agent.log
+agents/*/agent.log.err
+agents/*/agent.pid
+
+# Note: agents/*/agent.env and README.md are config/documentation
+# and are safe to commit.

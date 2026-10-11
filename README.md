@@ -423,144 +423,163 @@ Reference implementation in three languages:
 ## Multi-agent deployments
 
 Running N independent agents — each with its own chat, context counter,
-and history — does not require modifying the API. It requires N
-processes on N ports. The interesting part is how they share
-authentication.
-
-### The problem
-
-DeepSeek Web has one browser, one active page, one cookie session per
-account. Two processes with separate `state.json` files each log in
-independently — and each login goes through Cloudflare Turnstile, which
-is designed to detect automation. The result is often an infinite
-captcha loop: correct answers are rejected because the automated
-browser's aggregate trust score is below threshold. Retrying does not
-help; the score only degrades.
-
-### The solution: one state, many chats
-
-Authentication is shared. Everything else is not.
-
-```
-                ┌─────────────────────────────┐
-                │ shared-state.json           │   ← DeepSeek cookies
-                │ (one cookie session)        │      written once,
-                └──────────────┬──────────────┘      read by all
-                               │
-                ┌──────────────┴──────────────┐
-                │                             │
-       ┌────────▼─────────┐         ┌─────────▼────────┐
-       │ Process A        │         │ Process B        │
-       │ PORT=3000        │         │ PORT=3001        │
-       │ chat_state-a     │         │ chat_state-b     │
-       │ .api-key-a       │         │ .api-key-b       │
-       │ uploads-a        │         │ uploads-b        │
-       │ rag_data-a       │         │ rag_data-b       │
-       └──────────────────┘         └──────────────────┘
-```
-
-- **Cookies** live in `shared-state.json` and are shared.
-- **Chat state, API keys, uploads, RAG indexes** stay per-process.
-- **The login happens once**, in a normal browser (Firefox or Chrome),
-  not in the automated one.
-- **The captcha never appears** in the automated browser, because it
-  never visits `/sign_in`.
-
-Concurrent writes to the shared file are safe: the write path uses an
-mtime-guard and an atomic `renameSync`. If two processes start at the
-same time, one writes and the other logs `💾 Skipping state write` and
-continues — which is correct behavior, not an error.
+and history — does not require modifying the API. A generator script
+produces a self-contained deployment directory that starts, stops, and
+manages N agents with a single command.
 
 ### Minimal recipe
 
-**1. Establish cookies once, in a normal browser.**
-
-Log in to `chat.deepseek.com` in Firefox. Install the Cookie-Editor
-extension. Export cookies as JSON. Convert them to Playwright's
-`storageState` format:
+**1. Install and log in once.**
 
 ```bash
-jq '{
-  cookies: map({
-    name: .name, value: .value,
-    domain: .domain, path: .path,
-    expires: (.expirationDate // -1),
-    httpOnly: .httpOnly, secure: .secure,
-    sameSite: (.sameSite // "Lax")
-  }),
-  origins: []
-}' cookies.json > shared-state.json
+git clone https://github.com/maresin/deepseek-automation-api.git
+cd deepseek-automation-api
+npm install
+npm run build
+mkdir -p browsers
+PLAYWRIGHT_BROWSERS_PATH=./browsers npx playwright install chromium
 
-chmod 600 shared-state.json
+npm start
+# Log in via the browser window that opens. Solve the captcha if it
+# appears. Once the chat interface loads, press Ctrl+C.
 ```
 
-**2. Create two `.env` files.**
+This is the only login that ever happens. It produces `state.json`,
+which the multi-agent deployment copies and reuses. Agents start
+headless — no browser window, no login, no captcha.
 
-**`.env.a`:**
-```ini
-PORT=3000
-DEEPSEEK_STATE_PATH=./shared-state.json
-DEEPSEEK_CHAT_STATE_PATH=./chat_state-a.json
-DEEPSEEK_API_KEY_PATH=./.api-key-a
-DEEPSEEK_UPLOAD_DIR=./uploads-a
-RAG_DATA_DIR=./rag_data-a
-DEEPSEEK_HEADLESS=true
-```
-
-**`.env.b`** — same file with `b` suffix and `PORT=3001`.
-
-**3. Start both processes.**
+**2. Generate the deployment.**
 
 ```bash
-# Terminal 1
-set -a; source .env.a; set +a
-npm start
-
-# Terminal 2
-set -a; source .env.b; set +a
-npm start
+./tools/make-multi-agent.sh ~/my-project --agents 3
 ```
 
-**Expected log (both processes):**
-```
-💾 State file: /path/to/shared-state.json
-✅ Already logged in
-✅ DeepSeek client ready!
-```
+This creates `~/my-project/deepseek-agents/` with three agents on
+ports 3000–3002. The generator prints the API keys to stdout and
+saves them to the deployment's README.md.
 
-No `Performing auto-login`, no captcha, no `/sign_in`.
+Options:
 
-### What to keep separate
-
-| Variable | Must be unique | Why |
+| Flag | Default | Meaning |
 |---|---|---|
-| `DEEPSEEK_STATE_PATH` | ❌ shared | This is the whole point |
-| `DEEPSEEK_CHAT_STATE_PATH` | ✅ | Otherwise agents overwrite each other's `lastChatId` |
-| `DEEPSEEK_API_KEY_PATH` | ✅ | Each process needs its own auth token |
-| `DEEPSEEK_UPLOAD_DIR` | ✅ | Concurrent uploads would collide |
-| `RAG_DATA_DIR` | ✅ | Indexes are per-API-key; keep them on disk too |
-| `PORT` | ✅ | Obviously |
+| `--agents N` | 2 | number of agents |
+| `--base-port P` | 3000 | port of the first agent |
+| `--restore BOOL` | true | reopen last chat on startup |
+| `--snapshot BOOL` | true | snapshot cycle at 70% / 90% |
+| `--rag BOOL` | true | index history, search after transition |
+| `--subdir NAME` | `deepseek-agents` | name of the generated folder |
+| `--update-state` | — | refresh cookies only, no other changes |
 
-Full walkthrough including the cookie-transfer method, the captcha
-escape ladder, and what to do when cookies expire:
-[`docs/guides/building-applications.md`](docs/guides/building-applications.md).
+**3. Run the agents.**
+
+```bash
+cd ~/my-project/deepseek-agents
+./scripts/start-all.sh
+```
+
+Each agent is a standard OpenAI-compatible endpoint:
+
+```bash
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer <key from README.md>" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}]}'
+```
+
+**4. Stop.**
+
+```bash
+./scripts/stop-all.sh
+```
+
+### What the generator produces
+
+```
+~/my-project/
+├── (your code)
+└── deepseek-agents/
+    ├── README.md              generated, includes agent keys
+    ├── api-path.txt           absolute path to the installed API
+    ├── shared-state.json      DeepSeek cookies (one session, shared)
+    ├── scripts/
+    │   ├── start-all.sh       start every agent
+    │   ├── stop-all.sh        stop every agent
+    │   ├── status.sh          show PIDs, ports, context usage
+    │   ├── refresh-state.sh   re-copy cookies after a fresh login
+    │   └── lib/common.sh
+    └── agents/
+        ├── agent-1/           per-agent data
+        │   ├── agent.env
+        │   ├── .api-key
+        │   ├── chat_state.json
+        │   ├── uploads/
+        │   ├── rag_data/
+        │   └── agent.log
+        └── agent-N/
+```
+
+Everything generated lives under `deepseek-agents/`. The user's
+project root is left untouched apart from that one folder.
+
+### Why this works
+
+DeepSeek Web is protected by Cloudflare Turnstile. An automated
+Chromium triggers the challenge; correct answers are often rejected
+because the browser's aggregate trust score is below threshold, and
+retrying makes it worse. The project does not try to defeat the
+challenge.
+
+Instead, the login is removed from the critical path entirely. The
+cookies are established once, in a normal browser (via `npm start`),
+and shared by all agents. The automated Chromium never visits
+`/sign_in`, so Cloudflare never sees the automation fingerprint.
+
+Concurrent writes to `shared-state.json` are safe: the write path uses
+an mtime-guard and an atomic `renameSync` (see
+[A6](docs/algorithms/session.md#a6)). If two agents start at the same
+time, one writes and the other logs `💾 Skipping state write` — which
+is correct behavior, not an error.
 
 ### When cookies expire
 
-DeepSeek cookies live 1–3 months. When they do, both processes will
-log:
+DeepSeek cookies last 1–3 months. Symptoms:
 
+- `Performing auto-login` or `Chat page did not load` in an agent log
+- Any 4xx from an agent on a chat request
+
+Fix:
+
+```bash
+# 1. Stop the agents
+cd ~/my-project/deepseek-agents
+./scripts/stop-all.sh
+
+# 2. Log in again in the API directory
+cd /path/to/deepseek-automation-api
+npm start
+# ... complete the browser login, then Ctrl+C
+
+# 3. Copy the fresh cookies
+cd ~/my-project/deepseek-agents
+./scripts/refresh-state.sh
+
+# 4. Restart
+./scripts/start-all.sh
 ```
-📌 On login page, attempting auto-login...
-```
 
-Stop them, redo step 1, restart. The chat history and RAG indexes are
-not affected — only the browser session is.
+Chat history and RAG indexes are preserved — only the browser session
+is refreshed.
 
-**If the automated browser has already been flagged by Cloudflare** and
-keeps hitting the captcha loop, do not fight it. The cookie-transfer
-path avoids the automated login entirely; use it as the primary method,
-not as a fallback.
+### If the login itself fails
+
+If the automated Chromium shows an infinite Cloudflare captcha loop
+and correct answers are rejected, do not fight it. Two escalation
+paths exist: delete the DeepSeek account and register a new one, or
+transfer cookies from a normal browser via Cookie-Editor. Both are
+documented in
+[`docs/guides/troubleshooting.md`](docs/guides/troubleshooting.md#проблемы-с-регистрацией-deepseek).
+
+Full walkthrough: [`docs/guides/building-applications.md`](docs/guides/building-applications.md#мультиагентное-приложение).
 
 ---
 
@@ -819,12 +838,14 @@ Key sections:
 
 For multi-agent deployments specifically:
 
-- [Building applications — Multi-agent](docs/guides/building-applications.md#multi-agent-deployments)
-  — full recipe, cookie transfer, captcha escape ladder.
-- [A1 — Client initialization](docs/algorithms/session.md#a1) —
-  serialized startup sequence, `didLogin` semantics.
+- [Building applications — Multi-agent](docs/guides/building-applications.md#мультиагентное-приложение)
+  — full walkthrough.
+- [Troubleshooting — Registration](docs/guides/troubleshooting.md#проблемы-с-регистрацией-deepseek)
+  — captcha escape recipes.
 - [A6 — State persistence](docs/algorithms/session.md#a6) — mtime-guard
   and atomic write for shared state files.
+- [A1 — Client initialization](docs/algorithms/session.md#a1) —
+  serialized startup sequence.
 
 Markdown files are readable directly in `docs/` without building.
 
