@@ -29,9 +29,20 @@ agent_dirs() {
 # Read a single KEY=value from an env file. Prints the trimmed value,
 # or exits with status 1 if the key is absent.
 read_kv() {
+    # Parser contract, kept in sync with read_kv() in
+    # examples/two-agent-pipeline/demo_client.py:
+    #   - trailing \r removed (CRLF tolerant),
+    #   - leading whitespace removed before matching,
+    #   - empty lines and comment lines (leading #) skipped,
+    #   - KEY=value matches exactly; no space before =,
+    #   - value trimmed of surrounding whitespace,
+    #   - surrounding quotes preserved.
     local file="$1" key="$2" line
     while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -z "$line" ]] && continue
+        [[ "$line" == \#* ]] && continue
         case "$line" in
             "$key"=*)
                 printf '%s' "${line#*=}" \
