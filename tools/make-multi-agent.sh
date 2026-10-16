@@ -107,6 +107,70 @@ if [[ -z "$TARGET" ]]; then
 fi
 
 # --------------------------------------------------------------------
+# input validation
+# --------------------------------------------------------------------
+
+validate_args() {
+    # --subdir: relative, no '..', not '.' or '..', not empty.
+    # With --force the script does `rm -rf "$TARGET/$SUBDIR"`, so a
+    # bad value here is a data-loss bug, not a warning.
+    if [[ -z "$SUBDIR" || "$SUBDIR" == "." || "$SUBDIR" == ".." ]]; then
+        echo "✗ --subdir must be a non-empty path other than '.' or '..'" >&2
+        echo "  Got: ${SUBDIR:-(empty)}" >&2
+        exit 1
+    fi
+    if [[ "$SUBDIR" == /* ]]; then
+        echo "✗ --subdir must be relative, not absolute" >&2
+        echo "  Got: $SUBDIR" >&2
+        exit 1
+    fi
+    if [[ "$SUBDIR" == *..* ]]; then
+        echo "✗ --subdir must not contain '..'" >&2
+        echo "  Got: $SUBDIR" >&2
+        exit 1
+    fi
+
+    # --agents: 1..32. Each agent is a separate Chromium (~300 MB).
+    if ! [[ "$AGENTS" =~ ^[0-9]+$ ]] || (( AGENTS < 1 || AGENTS > 32 )); then
+        echo "✗ --agents must be an integer between 1 and 32" >&2
+        echo "  Got: $AGENTS" >&2
+        exit 1
+    fi
+
+    # --base-port: 1024..65535, and the whole range must fit.
+    if ! [[ "$BASE_PORT" =~ ^[0-9]+$ ]]; then
+        echo "✗ --base-port must be an integer" >&2
+        echo "  Got: $BASE_PORT" >&2
+        exit 1
+    fi
+    local last_port=$(( BASE_PORT + AGENTS - 1 ))
+    if (( BASE_PORT < 1024 || last_port > 65535 )); then
+        echo "✗ --base-port range must fit in 1024..65535" >&2
+        echo "  Got range: $BASE_PORT..$last_port" >&2
+        exit 1
+    fi
+
+    # Boolean flags.
+    if [[ "$RESTORE" != "true" && "$RESTORE" != "false" ]]; then
+        echo "✗ --restore must be 'true' or 'false'" >&2
+        echo "  Got: $RESTORE" >&2
+        exit 1
+    fi
+    if [[ "$SNAPSHOT" != "true" && "$SNAPSHOT" != "false" ]]; then
+        echo "✗ --snapshot must be 'true' or 'false'" >&2
+        echo "  Got: $SNAPSHOT" >&2
+        exit 1
+    fi
+    if [[ "$RAG" != "true" && "$RAG" != "false" ]]; then
+        echo "✗ --rag must be 'true' or 'false'" >&2
+        echo "  Got: $RAG" >&2
+        exit 1
+    fi
+}
+
+validate_args
+
+# --------------------------------------------------------------------
 # sanity checks
 # --------------------------------------------------------------------
 
