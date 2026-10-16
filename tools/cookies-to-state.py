@@ -28,12 +28,37 @@ import sys
 from pathlib import Path
 
 
-def convert(cookies_in: list) -> dict:
+# Only cookies whose domain is, or is a subdomain of, one of these
+# suffixes are kept. A Cookie-Editor export typically contains
+# cookies for dozens of unrelated sites; forwarding them all to
+# Playwright injects them into every request the automation makes.
+ALLOWED_DOMAIN_SUFFIXES: tuple = ("deepseek.com",)
+
+
+def is_allowed_domain(domain: str) -> bool:
+    d = domain.lstrip(".").lower()
+    return any(d == s or d.endswith("." + s)
+               for s in ALLOWED_DOMAIN_SUFFIXES)
+
+
+def convert(cookies_in: list) -> tuple:
+    """
+    Return (state, skipped_domains).
+
+    state is the Playwright storage-state dict; skipped_domains is a
+    set of domain strings that were dropped because they do not
+    match ALLOWED_DOMAIN_SUFFIXES.
+    """
     cookies_out = []
+    skipped_domains: set = set()
+
     for c in cookies_in:
         if not c.get("name") or not c.get("value"):
             continue  # skip empty entries
         if not c.get("domain"):
+            continue
+        if not is_allowed_domain(c["domain"]):
+            skipped_domains.add(c["domain"])
             continue
 
         cookies_out.append({
@@ -47,10 +72,10 @@ def convert(cookies_in: list) -> dict:
             "sameSite": c.get("sameSite", "Lax"),
         })
 
-    return {
-        "cookies": cookies_out,
-        "origins": [],
-    }
+    return (
+        {"cookies": cookies_out, "origins": []},
+        skipped_domains,
+    )
 
 
 def main() -> int:
@@ -79,11 +104,17 @@ def main() -> int:
         print("Expected a JSON array of cookies", file=sys.stderr)
         return 1
 
-    state = convert(raw)
+    state, skipped = convert(raw)
 
     if not state["cookies"]:
         print("No usable cookies found in the input.", file=sys.stderr)
         return 1
+
+    if skipped:
+        print(f"Skipped {len(skipped)} cookies for unrelated domains:")
+        for d in sorted(skipped):
+            print(f"  - {d}")
+        print()
 
     dst.write_text(json.dumps(state, indent=2), encoding="utf-8")
     dst.chmod(0o600)
