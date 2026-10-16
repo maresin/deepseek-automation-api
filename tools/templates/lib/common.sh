@@ -76,6 +76,50 @@ load_env() {
     done < "$file"
 }
 
+# Kill whatever process is listening on <port>, without npx and
+# without network access. Tries lsof, then ss, then fuser. Returns 0
+# if the port was occupied and the kill succeeded (or cannot be
+# verified), 1 if the port was already free or no tool is available.
+kill_port_local() {
+    local port="$1"
+    [[ -z "$port" ]] && return 1
+
+    local pids
+
+    if command -v lsof >/dev/null 2>&1; then
+        pids="$(lsof -ti "tcp:${port}" 2>/dev/null || true)"
+        [[ -z "$pids" ]] && return 1
+        echo "$pids" | xargs -r kill 2>/dev/null || true
+        sleep 1
+        pids="$(lsof -ti "tcp:${port}" 2>/dev/null || true)"
+        if [[ -n "$pids" ]]; then
+            echo "$pids" | xargs -r kill -9 2>/dev/null || true
+        fi
+        return 0
+    fi
+
+    if command -v ss >/dev/null 2>&1; then
+        pids="$(ss -ltnp "sport = :${port}" 2>/dev/null \
+            | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)"
+        [[ -z "$pids" ]] && return 1
+        echo "$pids" | xargs -r kill 2>/dev/null || true
+        sleep 1
+        pids="$(ss -ltnp "sport = :${port}" 2>/dev/null \
+            | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)"
+        if [[ -n "$pids" ]]; then
+            echo "$pids" | xargs -r kill -9 2>/dev/null || true
+        fi
+        return 0
+    fi
+
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -k "${port}/tcp" >/dev/null 2>&1 || true
+        return 0
+    fi
+
+    return 1
+}
+
 # Poll /v1/context/status until the given agent returns 200. This is
 # the true readiness probe: /health only reports that the HTTP server
 # is up, while the DeepSeek client takes 15–30 more seconds to

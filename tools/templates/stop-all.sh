@@ -34,10 +34,13 @@ while IFS= read -r agent_dir; do
     # Fallback: is anything still on the port?
     port="$(read_kv "$agent_dir/agent.env" PORT 2>/dev/null || true)"
     if [[ -n "$port" ]] && curl -sf "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
-        if command -v npx >/dev/null 2>&1; then
-            echo "→ $name still on port $port — using kill-port"
-            npx --yes kill-port "$port" >/dev/null 2>&1 || true
+        echo "→ $name still on port $port — killing by port"
+        if kill_port_local "$port"; then
             stopped=1
+        else
+            echo "  ! Could not find lsof/ss/fuser to kill port $port." >&2
+            echo "    Find the process manually:" >&2
+            echo "      lsof -i :$port  |  ss -ltnp | grep :$port  |  fuser -v ${port}/tcp" >&2
         fi
     fi
 done < <(agent_dirs)
