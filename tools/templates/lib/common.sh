@@ -94,7 +94,7 @@ wait_for_ready() {
     while (( $(date +%s) < deadline )); do
         code=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $key" \
-            "http://localhost:${port}/v1/context/status" 2>/dev/null || true)
+            "http://127.0.0.1:${port}/v1/context/status" 2>/dev/null || true)
 
         case "$code" in
             200) printf " ✓\n"; return 0 ;;

@@ -80,9 +80,9 @@ def http_get(url: str, headers: dict[str, str],
 
 
 def is_port_open(port: int, timeout: float = 2.0) -> bool:
-    """Return True if a TCP connect to localhost:port succeeds quickly."""
+    """Return True if a TCP connect to 127.0.0.1:port succeeds quickly."""
     try:
-        with socket.create_connection(("localhost", port), timeout=timeout):
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
             return True
     except OSError:
         return False
@@ -164,7 +164,7 @@ def wait_for_ready(agent: dict[str, Any], timeout: int = 180) -> bool:
         return False
 
     # Stage 2: wait for the client to become ready.
-    url = f"http://localhost:{port}/v1/context/status"
+    url = f"http://127.0.0.1:{port}/v1/context/status"
     headers = {"Authorization": f"Bearer {agent['key']}"}
     deadline = time.time() + timeout
 
@@ -193,7 +193,7 @@ def ask(agent: dict[str, Any], content: str, retries: int = 3) -> str:
     code per the client protocol. Returns the assistant text.
     """
     port = int(agent["port"])
-    url = f"http://localhost:{port}/v1/chat/completions"
+    url = f"http://127.0.0.1:{port}/v1/chat/completions"
     headers = {"Authorization": f"Bearer {agent['key']}"}
     payload: dict[str, Any] = {
         "messages": [{"role": "user", "content": content}],
@@ -246,7 +246,7 @@ def ask(agent: dict[str, Any], content: str, retries: int = 3) -> str:
                   f"({err.get('chars_used')}/{err.get('chars_limit')})")
             print(f"   →  starting fresh chat and retrying")
             http_post(
-                f"http://localhost:{port}/v1/chat/new",
+                f"http://127.0.0.1:{port}/v1/chat/new",
                 {"restore": False},
                 headers,
                 timeout=120.0,

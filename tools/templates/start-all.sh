@@ -83,5 +83,5 @@ echo "All ${#dirs[@]} agents ready."
 for agent_dir in "${dirs[@]}"; do
     name="$(basename "$agent_dir")"
     port="$(read_kv "$agent_dir/agent.env" PORT)"
-    printf "  %-10s http://localhost:%s\n" "$name" "$port"
+    printf "  %-10s http://127.0.0.1:%s\n" "$name" "$port"
 done

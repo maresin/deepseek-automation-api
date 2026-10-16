@@ -30,7 +30,7 @@ while IFS= read -r agent_dir; do
     if [[ "$state" == "running" ]] && [[ -f "$agent_dir/.api-key" ]]; then
         key="$(cat "$agent_dir/.api-key")"
         ctx=$(curl -s -H "Authorization: Bearer $key" \
-            "http://localhost:$port/v1/context/status" 2>/dev/null || true)
+            "http://127.0.0.1:$port/v1/context/status" 2>/dev/null || true)
         if [[ -n "$ctx" ]]; then
             used=$(printf '%s' "$ctx"  | grep -oE '"totalChars":[0-9]+' | cut -d: -f2 || true)
             limit=$(printf '%s' "$ctx" | grep -oE '"maxChars":[0-9]+'   | cut -d: -f2 || true)
