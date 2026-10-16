@@ -201,6 +201,12 @@ def ask(agent: dict[str, Any], content: str, retries: int = 3) -> str:
 
     backoff = 1.0
     attempt = 0
+    # A 409 is a state problem, not a transient error, so it does not
+    # consume the retry budget. But it must be bounded: if the server
+    # keeps returning 409 after a chat reset (misconfigured agent,
+    # persistent overflow), the loop would otherwise spin forever.
+    context_resets = 0
+    MAX_CONTEXT_RESETS = 2
 
     while True:
         attempt += 1
@@ -237,6 +243,12 @@ def ask(agent: dict[str, Any], content: str, retries: int = 3) -> str:
 
         # ---- 409 context exhausted -----------------------------
         if status == 409:
+            context_resets += 1
+            if context_resets > MAX_CONTEXT_RESETS:
+                raise RuntimeError(
+                    f"{agent['name']} context exhausted "
+                    f"{context_resets} times in a row; giving up"
+                )
             err: dict[str, Any] = {}
             try:
                 err = json.loads(body_text).get("error", {})
@@ -244,14 +256,15 @@ def ask(agent: dict[str, Any], content: str, retries: int = 3) -> str:
                 pass
             print(f"   ⚠  {agent['name']} context exhausted "
                   f"({err.get('chars_used')}/{err.get('chars_limit')})")
-            print(f"   →  starting fresh chat and retrying")
+            print(f"   →  starting fresh chat "
+                  f"({context_resets}/{MAX_CONTEXT_RESETS})")
             http_post(
                 f"http://127.0.0.1:{port}/v1/chat/new",
                 {"restore": False},
                 headers,
                 timeout=120.0,
             )
-            attempt -= 1  # retry does not count against the budget
+            attempt -= 1  # does not count against the retry budget
             continue
 
         # ---- 503 two distinct causes ---------------------------
