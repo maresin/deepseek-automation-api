@@ -66,9 +66,7 @@ deepseek-agents/
 scripts/
 directory_structure.txt
 context_for_new_chat.txt
-# Python bytecode
-__pycache__/
-*.pyc
+tools/dev/
 
 # Python bytecode
 __pycache__/
