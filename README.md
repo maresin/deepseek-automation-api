@@ -16,6 +16,9 @@ around it: context management, session recovery, RAG, and error
 handling. Those are what turn a browser-driven prototype into something
 usable for real, long-running work.
 
+**Changelog:** see [CHANGELOG.md](CHANGELOG.md) for what changed
+between versions. Releases are tagged `vX.Y.Z` on GitHub.
+
 ---
 
 ## Table of contents
