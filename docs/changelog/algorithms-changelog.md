@@ -3,6 +3,24 @@
 Каждая замена алгоритма фиксируется здесь. Старая версия остаётся
 в документе как `deprecated`, новая описывается отдельно.
 
+## 2026-10-20 — retry на server busy; восстановление после thinking stopped
+
+| Алгоритм | Было | Стало | Причина |
+|---|---|---|---|
+| E2 | Server Busy → 503 → shutdown | Retry (default 3×5мин) → 503 → shutdown opt-in | Автономные агенты не должны умирать от временного состояния бэкенда |
+| B6 | Только `"Server busy, please try again later."` | Обе формулировки через `serverBusyPattern` | DeepSeek использует `"Messages too frequent. Try again later."` в новой версии |
+| B2 | Только обработка Continue | Continue + детект `Stopped` в thinking-панели + Regenerate | Прерванная генерация возвращала неполный ответ как нормальный |
+
+**Что изменилось.** `ServerBusyError` теперь несёт `{ kind, attempts }`.
+`executePipeline` разделён на retry-loop и single-pass
+(`executePipelineOnce`). 503 дополнен `Retry-After`. `process.exit(1)`
+на busy стал opt-in через `DEEPSEEK_SHUTDOWN_ON_SERVER_BUSY`. Добавлены
+`detectThinkingStopped` и `clickRegenerate`.
+
+**Почему.** В мультиагентных деплоях shutdown одного агента —
+избыточная реакция. Retry позволяет пережить временные плашки.
+Thinking-прерывания раньше маскировались под успешный ответ.
+
 ## 2026-10-10 — конкурентная запись state.json
 
 | Алгоритм | Было | Стало | Причина |

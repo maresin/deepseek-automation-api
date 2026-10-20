@@ -413,6 +413,40 @@ The response to a 409 contains both the estimated and the real
 readable percentage, so a client can detect if the estimate is
 systematically off and adjust `DEEPSEEK_MAX_CONTEXT_CHARS`.
 
+### Server busy: retry, then 503
+
+When DeepSeek returns the busy placeholder, the API retries internally
+before giving up. Two formulations are recognised — "Server busy,
+please try again later." and "Messages too frequent. Try again later."
+— and both trigger the same behaviour.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DEEPSEEK_BUSY_MAX_RETRIES` | `3` | retries after the first attempt; `0` disables retry |
+| `DEEPSEEK_BUSY_DELAY_MS` | `300000` | delay between retries; 5 minutes |
+| `DEEPSEEK_SHUTDOWN_ON_SERVER_BUSY` | `false` | exit(1) after 503, restoring the pre-retry behaviour |
+
+**Client timeout.** With the defaults, a single
+`POST /v1/chat/completions` may take up to
+`(MAX_RETRIES + 1) × DELAY_MS ≈ 20 minutes` when DeepSeek is busy.
+Set client timeouts accordingly.
+
+**Immediate 503 instead of waiting.** Set
+`DEEPSEEK_BUSY_MAX_RETRIES=0`. The response carries a `Retry-After`
+header derived from `DEEPSEEK_BUSY_DELAY_MS`, so the client knows when
+to retry. This is the recommended configuration for interactive
+clients that cannot hold a connection for 20 minutes.
+
+**Retry and file attachments.** Files are consumed by the first
+attempt and are not re-uploaded on retry. If a request carries files,
+set `DEEPSEEK_BUSY_MAX_RETRIES=0` to avoid losing the attachment.
+
+**Thinking interrupted.** If generation was cut during the thinking
+phase (the panel shows "Stopped" instead of "Thought for N seconds"),
+the API clicks Regenerate once before giving up. If the interruption
+persists, the request is treated as an empty response and enters the
+busy/empty retry path.
+
 Full client-side protocol with state diagram and error handling for
 every code: [`docs/guides/session-management.md`](docs/guides/session-management.md).
 Reference implementation in three languages:

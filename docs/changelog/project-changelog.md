@@ -1,5 +1,33 @@
 # Журнал изменений проекта
 
+## 2026-10-20 — server busy retry, thinking-stopped recovery
+
+### Изменения в коде
+
+- `executePipeline` retries on the busy placeholder before throwing.
+  Defaults: 3 retries × 5 minutes. Configurable via
+  `DEEPSEEK_BUSY_MAX_RETRIES`, `DEEPSEEK_BUSY_DELAY_MS`.
+- `ServerBusyError` carries `{ kind: 'busy' | 'empty', attempts }`.
+  503 responses now include `Retry-After`.
+- `DEEPSEEK_SHUTDOWN_ON_SERVER_BUSY` (default `false`) restores the
+  pre-retry behaviour of exiting on a busy placeholder.
+- `detectServerBusy` matches both known wordings:
+  `"Server busy, please try again later."` and
+  `"Messages too frequent. Try again later."`.
+- `detectThinkingStopped` + `clickRegenerate`: when generation is
+  interrupted in the thinking phase, the API clicks Regenerate once
+  before treating the request as a failure.
+- Selector test suite: new "Thinking panel" group; forces `en-US`
+  locale; `:visible` filter for sidebar links; `page.$eval` for
+  `:has-text()`.
+
+### Документация
+
+- [E2](../algorithms/errors.md#e2) → v2.
+- [B6](../algorithms/response.md#b6) → v2.
+- README: "Server busy: retry, then 503" subsection.
+- `.env.example` added; `.gitignore` exception for it.
+
 ## 2026-10-10 — shared state и конкурентная запись
 
 ### Изменения в коде

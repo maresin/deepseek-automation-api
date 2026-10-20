@@ -85,69 +85,141 @@
 ---
 
 ## E2. ServerBusyError {#e2}
+
 **Статус:** active
-**Дата фиксации:** 2026-09-18
-**Версия:** 1
+**Дата фиксации:** 2026-10-20
+**Версия:** 2 (retry вместо shutdown)
 
 ### Назначение
 
-Сигнализировать фатальное состояние: DeepSeek вернул плашку
-«Server busy» вместо ответа. Повторные запросы бесполезны.
+Сигнализировать, что все попытки получить ответ от DeepSeek исчерпаны:
+бэкенд отвечает плашкой «server busy» (или его аналогом) либо
+возвращает пустой ответ без маркеров. По умолчанию агент при этом
+**не завершается** — следующая попытка клиента может пройти через
+несколько минут.
 
 ### Входные данные
 
 - Пустой ответ модели.
-- `detectServerBusy()` → true.
+- Результат детекта `detectServerBusy()` → `busy` или `empty`.
+- Параметры retry из `.env`:
+  - `DEEPSEEK_BUSY_MAX_RETRIES` (default 3)
+  - `DEEPSEEK_BUSY_DELAY_MS` (default 300000 = 5 минут)
+  - `DEEPSEEK_SHUTDOWN_ON_SERVER_BUSY` (default false)
 
 ### Выходные данные
 
-- HTTP 503 с типом `server_busy`.
-- `process.exit(1)` через 500 мс.
+- HTTP 503 с телом:
+  ```json
+  {
+    "error": {
+      "type": "server_busy",
+      "kind": "busy" | "empty",
+      "attempts": 4,
+      "retry_after_seconds": 300,
+      "message": "..."
+    }
+  }
+  ```
+- Заголовок `Retry-After: <секунды>`.
+- `process.exit(1)` через 500 мс — **только** если
+  `DEEPSEEK_SHUTDOWN_ON_SERVER_BUSY=true`.
 
 ### Псевдокод
 
 ```
-В executePipeline:
-  Если response.length === 0:
-     serverBusy := detectServerBusy()
-     Если serverBusy: throw ServerBusyError()
-     Иначе: throw Error("Empty response from DeepSeek")
+executePipeline(options):
+  maxRetries := env DEEPSEEK_BUSY_MAX_RETRIES (default 3)
+  busyDelayMs := env DEEPSEEK_BUSY_DELAY_MS   (default 300000)
+  emptyDelayMs := 15000                        (15 секунд)
+  maxAttempts := maxRetries + 1
+
+  Для attempt = 1 .. maxAttempts:
+    result := executePipelineOnce(options)
+
+    Если result.kind == 'ok':     вернуть result.response
+    Если result.kind == 'banner': вернуть ''  // caller обрабатывает
+
+    delay := result.kind == 'busy' ? busyDelayMs : emptyDelayMs
+    Если attempt >= maxAttempts:
+        throw ServerBusyError({kind: result.kind, attempts: attempt})
+
+    Логировать "retry N/M в delay секунд"
+    sleep(delay)
 
 В chat.js (catch):
-  Если err.name === 'ServerBusyError':
-     Отправить 503
-     setTimeout(() => process.exit(1), 500)
-     return
+  Если err.name == 'ServerBusyError':
+    Отправить 503 с kind, attempts, Retry-After
+    Если DEEPSEEK_SHUTDOWN_ON_SERVER_BUSY == 'true':
+        setTimeout(() => process.exit(1), 500)
 ```
 
 ### Граничные случаи
 
-- **Плашка есть, ответ непустой.** Невозможно: плашка заменяет ответ.
-- **Пустой ответ без плашки.** 500, не shutdown — может быть транзиент.
-- **Клиент оборвал соединение.** `process.exit` всё равно сработает.
+- **`DEEPSEEK_BUSY_MAX_RETRIES=0`.** Retry отключён, первая же пустая
+  попытка → 503. Для интерактивных приложений, где клиент не может
+  держать соединение 15+ минут.
+- **`DEEPSEEK_BUSY_DELAY_MS` очень маленький.** Риск: DeepSeek всё
+  равно вернёт busy, потому что cooldown не выдержан. Дефолт 5 минут —
+  эмпирический минимум.
+- **Retry успешен на 2-й/3-й попытке.** Клиент получает нормальный
+  ответ, без признаков в теле. Только в логе сервера видно `retry N/M`.
+- **Плашка появилась после успешной генерации.** Не относится к
+  `ServerBusyError` — это ранняя проверка `detectBanner`, которая
+  возвращает `{kind: 'banner'}` и обрабатывается через
+  `ContextExhaustedError` (см. E1).
+- **Файлы прикреплены к запросу.** Retry не перезагружает файлы —
+  первая попытка их «съедает». Если запрос с файлами и включён retry,
+  второй запрос уйдёт без вложения. Рекомендация в документации:
+  `DEEPSEEK_BUSY_MAX_RETRIES=0` для запросов с файлами.
 
 ### Почему именно так
 
-**Почему shutdown, а не retry.** Опыт: после Server Busy DeepSeek
-не отвечает часами. Ретраи жгут ресурсы впустую. Остановка передаёт
-решение супервизору (systemd, pm2).
+**Почему retry, а не мгновенный shutdown.** Раньше (`v1`) агент
+завершался на первой же плашке — политика «после Server Busy DeepSeek
+не отвечает часами, лучше перезапустить процесс». Для автономных
+агентов это плохо: одна плашка убивает весь сервис, а следующий
+запрос через минуту мог бы пройти. Retry даёт шанс пережить
+временное состояние без потери состояния.
 
-**Почему 500 мс перед exit.** Ответ 503 должен успеть дойти до клиента.
-Без задержки Node.js завершится до flush'а сокета.
+**Почему дефолтная задержка 5 минут.** DeepSeek реально требует
+несколько минут cooldown. Меньшие интервалы (30–60 секунд) не дают
+эффекта: плашка возвращается. 5 минут — минимальная эмпирическая
+величина, при которой retry имеет смысл.
 
-**Почему 503, а не 500.** 503 Service Unavailable семантически точнее:
-сервис временно недоступен. Клиент может использовать Retry-After
-(хотя мы его не выставляем — таймер неизвестен).
+**Почему `Retry-After` в 503.** Если retry исчерпаны, клиент должен
+знать, через сколько повторить. Значение берётся из
+`DEEPSEEK_BUSY_DELAY_MS`, то есть совпадает с внутренней политикой
+сервера. Клиент может поставить свою паузу, но ориентир есть.
 
-**Почему exit code 1.** Ненулевой код сигнализирует об аварийном
-завершении. Без авто-перезапуска сервер останется выключенным —
-это желаемое поведение.
+**Почему shutdown остался opt-in.** Старая семантика («убить процесс
+на busy») разумна, когда супервизор поднимает агента за секунды.
+Оставили её через `DEEPSEEK_SHUTDOWN_ON_SERVER_BUSY=true` — теперь
+это осознанный выбор, а не поведение по умолчанию.
+
+**Почему `empty` и `busy` различаются.** В обоих случаях ответ пустой,
+но `busy` — явный сигнал DeepSeek («подожди 5 минут»), а `empty` —
+неизвестный сбой. Для `busy` длинная пауза, для `empty` короткая
+(15 секунд): если проблема была транзиентной (таймаут сети, короткий
+глюк), длинная пауза только зря блокирует клиента.
 
 ### Реализация
 
-- `src/types.ts` → класс
-- `src/DeepSeekClient.ts` → `executePipeline()`
-- `server-modules/routes/chat.js`
+- `src/types.ts` → `BusyKind`, `ServerBusyError({ kind, attempts })`
+- `src/DeepSeekClient.ts` → `executePipeline` (retry loop),
+  `executePipelineOnce` (single pass)
+- `src/chat/ResponseExtractor.ts` → `detectServerBusy()` (обе
+  формулировки)
+- `src/browser/Selectors.ts` → `serverBusyPattern`,
+  `retryButtonPathPrefix`
+- `server-modules/routes/chat.js` → 503 + `Retry-After` + условный
+  shutdown
+
+### История
+
+- v1 (2026-09-18): `ServerBusyError` → HTTP 503 → shutdown после 500 мс.
+- v2 (2026-10-20): retry с настраиваемой задержкой; shutdown стал
+  opt-in; `Retry-After`; различение `busy` / `empty`.
 
 ---
 

@@ -46,6 +46,7 @@ Thumbs.db
 .env
 .env.local
 .env.*
+!.env.example
 
 # Tests
 test-report.json
