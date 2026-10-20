@@ -312,6 +312,17 @@ async function run() {
     const context = await browser.newContext({
         storageState: STATE_PATH,
         permissions: ['clipboard-read', 'clipboard-write'],
+        // Force English to match the production browser context
+        // (BrowserManager.launch). DeepSeek serves a different UI
+        // per locale; the text-based selectors — ".ds-toggle-button
+        // :has-text('DeepThink')", ".ds-dropdown-menu-option__label
+        // :has-text('Settings')", ".ds-button :has-text('Continue')",
+        // etc. — only match in English. Without this, the test fails
+        // on any non-English system locale.
+        locale: 'en-US',
+        extraHTTPHeaders: {
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
     });
     PAGE = await context.newPage();
 
@@ -357,7 +368,11 @@ async function run() {
         description: 'appears when hovering a chat entry',
         before: async (page) => {
             await expandSidebar(page);
-            const link = await page.$('a[href^="/a/chat/s/"]');
+            // Multiple links may be present (grouped under
+            // Today/Yesterday/7 Days). Take the first *visible* one;
+            // page.$ alone can pick a hidden entry from a collapsed
+            // section, and hover on it times out.
+            const link = await page.$('a[href^="/a/chat/s/"]:visible');
             if (link) await link.hover();
             await page.waitForTimeout(DELAYS.AFTER_ACTION_MS);
         },
@@ -522,6 +537,115 @@ async function run() {
 
     // Let the generation finish before the next group
     await waitForStopToDisappear(PAGE, 180000);
+
+    // ============================================================
+    // GROUP 6 — Thinking panel
+    // ============================================================
+    //
+    // Verifies the two markers that drive the "Stopped" recovery path
+    // in ResponseExtractor.detectThinkingStopped:
+    //
+    //   - thinkingCompletePattern must be present on a successful
+    //     DeepThink response ("Thought for N seconds"). This proves
+    //     the panel is rendered and gives meaning to the absence of
+    //     "Stopped".
+    //
+    //   - thinkingStoppedText must NOT be present on the same block.
+    //     A real interruption cannot be forced from a test — but if
+    //     "Stopped" ever leaks into a successful response, this check
+    //     catches it.
+    //
+    // The test enables DeepThink for its own prompt and turns it off
+    // afterwards, so subsequent tests see the original toggle state.
+
+    logGroup('Thinking panel');
+
+    // Enable DeepThink if not already on, and remember whether we
+    // changed it so we can restore the state afterwards.
+    //
+    // page.$eval runs the selector in Playwright context (supports
+    // :has-text()), then evaluates the callback in the page. Using
+    // page.evaluate with a :has-text() selector would throw
+    // "not a valid selector" — that pseudo-class is Playwright-only.
+    const deepThinkWasOn = await PAGE.$eval(
+        Selectors.deepThinkButton,
+        el => el.classList.contains('ds-toggle-button--selected')
+    ).catch(() => false);
+
+    if (!deepThinkWasOn) {
+        const btn = await PAGE.$(Selectors.deepThinkButton);
+        if (btn) {
+            await btn.click();
+            await PAGE.waitForTimeout(DELAYS.AFTER_ACTION_MS);
+        }
+    }
+
+    // Short reasoning prompt — enough to trigger a thinking panel,
+    // short enough to finish quickly.
+    const THINKING_PROMPT =
+        'What is 17 multiplied by 23? Answer in one short sentence. ' +
+        'Think step by step.';
+
+    const thinkingStarted = await startLongGeneration(PAGE, THINKING_PROMPT);
+    if (thinkingStarted) {
+        await waitForStopToDisappear(PAGE, 120000);
+    }
+
+    // Read the last non-empty assistant block.
+    const thinkingBlock = await PAGE.evaluate((cfg) => {
+        const blocks = document.querySelectorAll('[data-virtual-list-item-key]');
+        if (blocks.length === 0) return { text: '', hasComplete: false, hasStopped: false };
+
+        let last = null;
+        for (let i = blocks.length - 1; i >= 0; i--) {
+            if ((blocks[i].textContent || '').trim().length > 0) {
+                last = blocks[i];
+                break;
+            }
+        }
+        if (!last) return { text: '', hasComplete: false, hasStopped: false };
+
+        const text = last.textContent || '';
+        const re = new RegExp(cfg.completeSource, 'i');
+        const hasComplete = re.test(text);
+        const hasStopped = Array.from(last.querySelectorAll('span'))
+            .some(s => (s.textContent || '').trim() === cfg.stoppedText);
+
+        return { text: text.substring(0, 300), hasComplete, hasStopped };
+    }, {
+        completeSource: Selectors.thinkingCompletePattern.source,
+        stoppedText: Selectors.thinkingStoppedText,
+    });
+
+    // ---- check 1: "Thought for N seconds" is present ----
+    TOTAL++;
+    console.log(`\n[${TOTAL}] thinkingCompletePattern — "Thought for N seconds"`);
+    await updateOverlayCurrent(PAGE, 'thinkingCompletePattern');
+
+    if (thinkingBlock.hasComplete) PASSED++; else FAILED++;
+    console.log(`  ${thinkingBlock.hasComplete ? '✅' : '❌'} ${thinkingBlock.hasComplete ? 'found' : 'not found — DeepThink panel missing'}`);
+    await updateOverlayResult(PAGE, 'thinkingCompletePattern', thinkingBlock.hasComplete);
+    await PAGE.waitForTimeout(DELAYS.BETWEEN_TESTS);
+
+    // ---- check 2: "Stopped" is NOT present on a successful answer ----
+    TOTAL++;
+    console.log(`\n[${TOTAL}] thinkingStoppedText — must be absent on success`);
+    await updateOverlayCurrent(PAGE, 'thinkingStoppedText');
+
+    const noStopped = !thinkingBlock.hasStopped;
+    if (noStopped) PASSED++; else FAILED++;
+    console.log(`  ${noStopped ? '✅' : '❌'} ${noStopped ? 'correctly absent' : 'unexpectedly present'}`);
+    await updateOverlayResult(PAGE, 'thinkingStoppedText', noStopped);
+    await PAGE.waitForTimeout(DELAYS.BETWEEN_TESTS);
+
+    // Restore DeepThink state for anything that follows.
+    if (!deepThinkWasOn) {
+        const btn = await PAGE.$(Selectors.deepThinkButton);
+        if (btn) {
+            await btn.click();
+            await PAGE.waitForTimeout(DELAYS.AFTER_ACTION_MS);
+        }
+    }
 
     // ---- informational selectors ----
     await test('loadingIndicator', Selectors.loadingIndicator, {

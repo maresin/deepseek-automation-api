@@ -106,8 +106,27 @@ export const Selectors = {
     continueButtonText: 'Continue',
     lengthLimitBannerPattern: /Length limit reached[^\n]*/i,
     /**
-     * Exact text of the "Server busy" warning span. Fallback detection
-     * signal, used if DeepSeek changes the Retry icon markup.
+     * Text of the "server busy" placeholder. DeepSeek has used two
+     * formulations — "Server busy, please try again later." and
+     * "Messages too frequent. Try again later." — both mean the same
+     * thing. The regex matches either.
+     *
+     * Used as a fallback. The primary signal is the Retry icon
+     * (retryButtonPathPrefix), which is locale-independent.
      */
-    serverBusyText: 'Server busy, please try again later.',
+    serverBusyPattern: /(?:Server busy, please try again later\.|Messages too frequent\.?\s*Try again later\.?)/i,
+    /**
+     * Thinking-panel state markers.
+     *
+     * DeepSeek shows a panel above the answer when DeepThink is enabled:
+     *   - on success        → "Thought for N seconds"
+     *   - on interruption   → "Stopped"
+     *
+     * `thinkingStoppedText` is used by ResponseExtractor.detectThinkingStopped
+     * to trigger a Regenerate. `thinkingCompletePattern` is only used by
+     * the selector test: it confirms the panel exists in its normal form,
+     * so the absence of "Stopped" is meaningful.
+     */
+    thinkingCompletePattern: /Thought for \d+ second/i,
+    thinkingStoppedText: 'Stopped',
 };

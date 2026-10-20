@@ -364,6 +364,57 @@ export class ChatController {
     }
 
     /**
+     * Click the Regenerate button on the given assistant message and
+     * wait for generation to start.
+     *
+     * Regenerate lives in the message footer, next to Copy. It
+     * replaces the content of the same message block — a new
+     * data-virtual-list-item-key is not created.
+     *
+     * @param assistantKey - data-virtual-list-item-key of the message.
+     * @returns true if the button was found and clicked.
+     */
+    async clickRegenerate(assistantKey: number): Promise<boolean> {
+        const page = this.browserManager.page!;
+
+        const clicked = await page.evaluate((cfg) => {
+            const block = document.querySelector(
+                `[data-virtual-list-item-key="${cfg.key}"]`
+            );
+            if (!block) return false;
+            const buttons = block.querySelectorAll('[role="button"]');
+            for (const btn of Array.from(buttons)) {
+                const path = btn.querySelector('svg path');
+                if (path && (path.getAttribute('d') || '').startsWith(cfg.prefix)) {
+                    (btn as HTMLElement).click();
+                    return true;
+                }
+            }
+            return false;
+        }, { key: assistantKey, prefix: Selectors.regenerateButtonPathPrefix });
+
+        if (!clicked) {
+            console.warn(`⚠️ Regenerate button not found in block ${assistantKey}`);
+            return false;
+        }
+
+        // Wait briefly for generation to start (Stop appears) or for
+        // an instant short response to complete (Stop never appears).
+        try {
+            await page.waitForSelector(Selectors.stopButton, {
+                state: 'visible',
+                timeout: 5000,
+            });
+        } catch {
+            // No Stop button — regeneration may already have
+            // completed (very short answer) or failed silently.
+            // waitForFullResponse below will figure it out.
+        }
+
+        return true;
+    }
+
+    /**
      * Wait for the full assistant response, handling Continue seamlessly.
      * The assistant block key does NOT change when Continue is clicked.
      *

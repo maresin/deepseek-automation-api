@@ -80,16 +80,43 @@ export class ContextExhaustedError extends Error {
 }
 
 /**
- * Thrown when DeepSeek responds with the "Server busy, please try again
- * later" placeholder instead of an assistant message.
+ * Which placeholder triggered the busy condition.
  *
- * This is a fatal condition by project policy: the HTTP layer sends 503
- * to the current client and then terminates the process. Retrying is not
- * attempted — experience shows the backend stays unavailable for hours.
+ *   - 'busy'  — the "Server busy" / "Messages too frequent" marker
+ *               was found in the DOM. DeepSeek needs minutes to cool
+ *               down before the next attempt.
+ *   - 'empty' — the response was empty but no busy marker was found.
+ *               Treated as a transient failure; shorter retry delay.
+ */
+export type BusyKind = 'busy' | 'empty';
+
+/**
+ * Thrown when the server-busy placeholder persists after every retry.
+ *
+ * The API retries the request internally before throwing this. The
+ * number of retries and the delay between them are controlled by
+ * DEEPSEEK_BUSY_MAX_RETRIES and DEEPSEEK_BUSY_DELAY_MS. When those
+ * are exhausted, this error carries the number of attempts made and
+ * the kind of failure so the HTTP layer can return a detailed 503
+ * with a Retry-After header.
+ *
+ * The previous behaviour — throwing on the first sighting and
+ * calling process.exit(1) — is available via
+ * DEEPSEEK_SHUTDOWN_ON_SERVER_BUSY=true, but is no longer the
+ * default: an autonomous agent should survive a busy backend.
  */
 export class ServerBusyError extends Error {
-    constructor(message = 'DeepSeek backend is not responding') {
-        super(message);
+    constructor(public details: {
+        kind: BusyKind;
+        attempts: number;
+    }) {
+        const label = details.kind === 'busy'
+            ? 'server busy'
+            : 'empty response';
+        super(
+            `DeepSeek ${label} after ${details.attempts} attempt(s). ` +
+            `The backend may be temporarily unavailable.`
+        );
         this.name = 'ServerBusyError';
     }
 }

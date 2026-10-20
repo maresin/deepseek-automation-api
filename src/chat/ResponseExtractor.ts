@@ -60,21 +60,30 @@ export class ResponseExtractor {
     }
 
     /**
-     * Detect the "Server busy, please try again later." placeholder.
+     * Detect the "server busy" placeholder.
      *
      * DeepSeek renders this as a system item in the message list when its
-     * backend refuses to answer. The placeholder contains a Retry button
-     * and produces an empty Copy result — which is exactly the reason this
-     * detection is called only after an empty response has been received.
+     * backend refuses to answer. The placeholder produces an empty Copy
+     * result — which is exactly the reason this detection is called only
+     * after an empty response has been received.
      *
-     * Two independent signals are checked inside each data-virtual-list-item-key
-     * block, and either is sufficient:
+     * DeepSeek has used two wordings for the placeholder:
+     *   - "Server busy, please try again later."
+     *   - "Messages too frequent. Try again later."
+     * Both mean the same thing: wait several minutes before retrying.
+     * The detection covers both.
+     *
+     * Two independent signals are checked inside each
+     * data-virtual-list-item-key block; either is sufficient:
+     *
      *   1. Retry icon SVG path prefix (primary, localization-safe).
-     *   2. Exact text match on the warning span (fallback).
+     *   2. Text match against serverBusyPattern (fallback). The block's
+     *      full textContent is matched rather than individual spans,
+     *      because the wording can be split across multiple spans.
      *
      * Combined detection avoids false positives from user-authored text:
-     * the placeholder block contains a Retry button, while a normal message
-     * block never does.
+     * the placeholder block contains a Retry button, while a normal
+     * message block never does.
      *
      * @returns true if the placeholder is present in the DOM.
      */
@@ -82,22 +91,62 @@ export class ResponseExtractor {
         const page = this.browserManager.page!;
         return await page.evaluate((cfg) => {
             const blocks = document.querySelectorAll('[data-virtual-list-item-key]');
+            const pattern = new RegExp(cfg.patternSource, 'i');
+
             for (const block of Array.from(blocks)) {
+                // Primary: retry icon. Present in both wordings.
                 const paths = block.querySelectorAll('svg path');
                 for (const p of Array.from(paths)) {
                     const d = p.getAttribute('d') || '';
                     if (d.startsWith(cfg.retryPath)) return true;
                 }
-                const spans = block.querySelectorAll('span');
-                for (const s of Array.from(spans)) {
-                    if ((s.textContent || '').trim() === cfg.busyText) return true;
-                }
+                // Fallback: text. Check the whole block, not spans.
+                const text = block.textContent || '';
+                if (pattern.test(text)) return true;
             }
             return false;
         }, {
             retryPath: Selectors.retryButtonPathPrefix,
-            busyText: Selectors.serverBusyText,
+            patternSource: Selectors.serverBusyPattern.source,
         });
+    }
+
+    /**
+     * Check whether generation was interrupted during the thinking
+     * phase of the given assistant message.
+     *
+     * DeepSeek normally shows a thinking panel with "Thought for N
+     * seconds". When generation is interrupted, the panel is replaced
+     * by "Stopped" instead, and the answer that follows is partial or
+     * empty. The reliable recovery is to click Regenerate.
+     *
+     * Detection is scoped to the assistant block. "Stopped" is
+     * matched as exact span text: the Stop button uses only an icon,
+     * so a span containing "Stopped" inside the assistant block is a
+     * strong signal.
+     *
+     * Returns true only when the marker is present. The absence of
+     * the marker (whether the panel is complete or missing entirely)
+     * is the normal case and needs no distinction.
+     *
+     * @param assistantKey - data-virtual-list-item-key of the message.
+     */
+    async detectThinkingStopped(assistantKey: number): Promise<boolean> {
+        const page = this.browserManager.page!;
+        return await page.evaluate((cfg) => {
+            const block = document.querySelector(
+                `[data-virtual-list-item-key="${cfg.key}"]`
+            );
+            if (!block) return false;
+
+            const spans = block.querySelectorAll('span');
+            for (const span of Array.from(spans)) {
+                if ((span.textContent || '').trim() === cfg.stoppedText) {
+                    return true;
+                }
+            }
+            return false;
+        }, { key: assistantKey, stoppedText: Selectors.thinkingStoppedText });
     }
 
     /**

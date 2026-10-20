@@ -182,14 +182,29 @@ module.exports = async function chatRoute(req, res) {
 
         if (err.name === 'ServerBusyError') {
             if (!res.headersSent) {
+                const retryDelaySec = Math.ceil(
+                    parseInt(process.env.DEEPSEEK_BUSY_DELAY_MS || '300000', 10) / 1000
+                );
+                res.set('Retry-After', String(retryDelaySec));
                 res.status(503).json({
                     error: {
                         type: 'server_busy',
-                        message: 'DeepSeek backend is not responding. Server shutting down.',
+                        kind: err.details?.kind || 'busy',
+                        attempts: err.details?.attempts || 0,
+                        retry_after_seconds: retryDelaySec,
+                        message: err.message || 'DeepSeek backend is not responding.',
                     },
                 });
             }
-            setTimeout(() => process.exit(1), 500);
+            // Old behaviour: shut down the agent. New default: keep
+            // it alive so it can serve subsequent requests. The next
+            // request may succeed immediately. Enable shutdown via
+            // env only when a process supervisor will restart the
+            // agent quickly.
+            if (process.env.DEEPSEEK_SHUTDOWN_ON_SERVER_BUSY === 'true') {
+                console.warn('🚫 Shutting down (DEEPSEEK_SHUTDOWN_ON_SERVER_BUSY=true).');
+                setTimeout(() => process.exit(1), 500);
+            }
             return;
         }
 

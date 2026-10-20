@@ -31,6 +31,25 @@ import { isImageFile } from './utils/fileUtils.js';
 import { loadPrompt } from './utils/prompts.js';
 import { getUploadsDir } from './utils/paths.js';
 import { ContextExhaustedError, RestoreResult, ServerBusyError } from './types.js';
+import { sleep } from './utils/delays.js';
+
+/**
+ * Outcome of a single executePipelineOnce call.
+ *
+ *   - 'ok'     — a non-empty response was extracted.
+ *   - 'banner' — the length-limit banner appeared before any
+ *                response. Not retryable; the caller handles it via
+ *                needTransition / lastLengthLimit.
+ *   - 'busy'   — empty response with the server-busy placeholder
+ *                present. Retryable after a long cooldown.
+ *   - 'empty'  — empty response with no busy marker. Retryable
+ *                after a shorter cooldown.
+ */
+type PipelineResult =
+    | { kind: 'ok'; response: string }
+    | { kind: 'banner' }
+    | { kind: 'busy' }
+    | { kind: 'empty' };
 
 export class DeepSeekClient {
     public browserManager: BrowserManager;
@@ -566,11 +585,118 @@ export class DeepSeekClient {
     // PIPELINE
     // ============================================================
 
+    /**
+     * Send a message and wait for a response, retrying on
+     * server-busy conditions.
+     *
+     * Retry policy (configurable via .env):
+     *
+     *   DEEPSEEK_BUSY_MAX_RETRIES   (default 3)  number of retries
+     *                                            after the first
+     *                                            attempt
+     *   DEEPSEEK_BUSY_DELAY_MS      (default 300000 = 5 minutes)
+     *                                            delay between retries
+     *                                            when the busy marker
+     *                                            is present
+     *
+     * When the response is empty and the busy marker is found in the
+     * DOM, the request is retried after the long delay — DeepSeek
+     * needs several minutes of cooldown before it accepts the next
+     * request. When the response is empty without any marker, a
+     * shorter 15-second delay is used. When retries are exhausted,
+     * a ServerBusyError is thrown and translated to HTTP 503 by the
+     * route layer.
+     *
+     * Notes on retry side-effects:
+     *
+     *   - Each retry re-sends the message. The previous attempt's
+     *     user message remains visible in the chat, so the
+     *     conversation history will contain duplicate user messages
+     *     when retries occur. This is a known trade-off: alternative
+     *     approaches (clicking the "Regenerate" button in the
+     *     placeholder) are planned for a future iteration.
+     *   - File attachments are consumed by the first send attempt
+     *     and are not re-uploaded on retry. If a request carries
+     *     files, set DEEPSEEK_BUSY_MAX_RETRIES=0 to disable retry.
+     *
+     * @param options - text, optional filePath(s), skipStatsUpdate.
+     * @returns The assistant's response text, or an empty string if
+     *          the length-limit banner fired (caller handles it).
+     * @throws ServerBusyError when retries are exhausted.
+     * @throws ContextExhaustedError when the banner fired mid-response.
+     */
     public async executePipeline(options: {
         text: string;
         filePath?: string | string[];
         skipStatsUpdate?: boolean;
     }): Promise<string> {
+        const maxRetries = parseInt(
+            process.env.DEEPSEEK_BUSY_MAX_RETRIES || '3', 10
+        );
+        const busyDelayMs = parseInt(
+            process.env.DEEPSEEK_BUSY_DELAY_MS || '300000', 10
+        );
+        const emptyDelayMs = 15000;   // 15 seconds for plain empty
+        const maxAttempts = maxRetries + 1;
+
+        let attempt = 0;
+        while (true) {
+            attempt++;
+            const result = await this.executePipelineOnce(options);
+
+            if (result.kind === 'ok') {
+                if (attempt > 1) {
+                    console.log(
+                        `✅ Response received on attempt ${attempt}/${maxAttempts}`
+                    );
+                }
+                return result.response;
+            }
+
+            if (result.kind === 'banner') {
+                // Length limit — not retryable. Return empty; the
+                // caller sees needTransition / lastLengthLimit and
+                // converts this into a ContextExhaustedError.
+                return '';
+            }
+
+            // busy or empty
+            const delayMs = result.kind === 'busy' ? busyDelayMs : emptyDelayMs;
+
+            if (attempt >= maxAttempts) {
+                console.error(
+                    `🚫 DeepSeek ${result.kind} persists after ${attempt} ` +
+                    `attempt(s) — giving up`
+                );
+                throw new ServerBusyError({
+                    kind: result.kind,
+                    attempts: attempt,
+                });
+            }
+
+            console.warn(
+                `⚠️ DeepSeek ${result.kind} (attempt ${attempt}/${maxAttempts}); ` +
+                `retry in ${Math.round(delayMs / 1000)}s`
+            );
+            await sleep(delayMs);
+        }
+    }
+
+    /**
+     * One pass of the pipeline: upload any files, send the message,
+     * wait for the response, extract it, and return the outcome
+     * without retrying.
+     *
+     * The retry loop lives in executePipeline. Keeping the single
+     * pass in a separate method makes the retry policy easy to
+     * reason about — the loop never has to look at the DOM directly,
+     * it only decides what to do based on the returned kind.
+     */
+    private async executePipelineOnce(options: {
+        text: string;
+        filePath?: string | string[];
+        skipStatsUpdate?: boolean;
+    }): Promise<PipelineResult> {
         const { text, filePath, skipStatsUpdate = false } = options;
         const lastKey = await this.getMaxMessageKey();
 
@@ -586,20 +712,23 @@ export class DeepSeekClient {
         }
         await this.chatController.send();
 
-        // Early banner check — no answer will come if the limit is reached,
-        // so we fail fast before waiting for a Stop button that never appears.
+        // Early banner check — no answer will come if the limit is
+        // reached, so we fail fast before waiting for a Stop button
+        // that never appears.
         await this.page.waitForTimeout(2000);
         const earlyWarning = await this.responseExtractor.detectBanner();
         if (earlyWarning) {
             console.warn('⚠️ DeepSeek: Length limit reached. Please start a new chat.');
             this.needTransition = true;
             this.lastLengthLimit = { detected: true, percent: null };
-            return '';
+            return { kind: 'banner' };
         }
 
-        // Wait for the full assistant response, handling Continue transparently.
-        // ChatController.waitForFullResponse throws ContextExhaustedError if the
-        // length-limit banner appears during generation.
+        // Wait for the full assistant response, handling Continue
+        // transparently. ChatController.waitForFullResponse throws
+        // ContextExhaustedError if the length-limit banner appears
+        // during generation — that error propagates as an exception,
+        // not as an empty response, so the retry loop is bypassed.
         let response: string;
         try {
             response = await this.chatController.waitForFullResponse(lastKey);
@@ -617,26 +746,60 @@ export class DeepSeekClient {
             throw err;
         }
 
-        // An empty response from DeepSeek is never a valid result. Two cases
-        // produce it: the "Server busy" placeholder, and unknown extraction
-        // failures. Distinguish them by looking for the Retry placeholder in
-        // the DOM; the first case is fatal for the whole process.
-        if (response.length === 0) {
-            const serverBusy = await this.responseExtractor.detectServerBusy();
-            if (serverBusy) {
-                console.error('🚫 DeepSeek server busy — shutting down.');
-                throw new ServerBusyError();
+        // Thinking-phase interruption. Even when a partial answer
+        // was produced, it is unreliable — generation was cut. The
+        // correct recovery is Regenerate, not accepting what is
+        // there. Click once and wait for the replacement.
+        const assistantKey = lastKey + 2;
+        const stopped = await this.responseExtractor.detectThinkingStopped(assistantKey);
+        if (stopped) {
+            console.warn('⚠️ Thinking interrupted (Stopped marker) — clicking Regenerate');
+            const clicked = await this.chatController.clickRegenerate(assistantKey);
+            if (clicked) {
+                try {
+                    const regenerated = await this.chatController.waitForFullResponse(lastKey);
+                    const stillStopped = await this.responseExtractor
+                        .detectThinkingStopped(assistantKey);
+                    if (!stillStopped && regenerated.length > 0) {
+                        // Fall through to normal processing with the
+                        // regenerated response.
+                        response = regenerated;
+                    } else {
+                        console.warn(
+                            '⚠️ Regenerate did not resolve the interruption — ' +
+                            'escalating to retry'
+                        );
+                        return { kind: 'empty' };
+                    }
+                } catch (err) {
+                    console.warn(
+                        `⚠️ Regenerate failed: ${(err as Error).message}`
+                    );
+                    return { kind: 'empty' };
+                }
+            } else {
+                return { kind: 'empty' };
             }
-            throw new Error('Empty response from DeepSeek');
         }
 
+        // Empty response — distinguish the two causes.
+        //   busy  : placeholder is present; long cooldown
+        //   empty : no marker; short cooldown
+        if (response.length === 0) {
+            const serverBusy = await this.responseExtractor.detectServerBusy();
+            return serverBusy ? { kind: 'busy' } : { kind: 'empty' };
+        }
+
+        // Success — update context accounting.
         if (!skipStatsUpdate) {
             let addedChars = (text?.length || 0) + response.length;
             if (filePath) {
                 const files = Array.isArray(filePath) ? filePath : [filePath];
                 for (const f of files) {
                     if (!isImageFile(f)) {
-                        try { addedChars += fs.readFileSync(f, 'utf-8').length; } catch { /* ignore */ }
+                        try {
+                            addedChars += fs.readFileSync(f, 'utf-8').length;
+                        } catch { /* ignore */ }
                     }
                 }
             }
@@ -652,7 +815,7 @@ export class DeepSeekClient {
             await this.saveChatState();
         }
 
-        return response;
+        return { kind: 'ok', response };
     }
 
     // ============================================================
