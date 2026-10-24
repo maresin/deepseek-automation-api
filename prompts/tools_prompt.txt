@@ -26,6 +26,9 @@ CRITICAL RULES:
    2-space indentation. Compact JSON (single-line without whitespace)
    is forbidden and will be rejected by the parser.
 4. Always close every opening bracket.
+5. Do NOT represent tool calls using any markup language — XML,
+   DSML, YAML, tag-based syntax, or anything other than the JSON
+   object shown above. The parser will reject markup.
 
 When you don't need tools, respond in normal text.
 

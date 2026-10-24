@@ -14,6 +14,23 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tool calls emitted in DSML markup.** DeepSeek occasionally
+  writes tool calls in an internal `<｜｜DSML｜｜ calls>` format
+  instead of the JSON shape requested by the system prompt. These
+  now parse into standard OpenAI `tool_calls` instead of passing
+  through as plain text, which broke the client's tool-calling
+  loop. Preamble text before the marker is preserved in `content`.
+
+### Changed
+
+- **Tool prompt: forbidden markup.** `prompts/tools_prompt.txt` now
+  explicitly forbids XML, DSML, YAML, and other markup languages for
+  tool calls, in addition to the existing "JSON only" rule. This
+  reduces the frequency of DSML markup appearing at all; the DSML
+  parser (previous entry) remains the safety net if it does.
+
 ## [1.0.0] — 2026-10-20
 
 Initial public release. Everything below was developed iteratively
