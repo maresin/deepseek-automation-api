@@ -3,6 +3,20 @@
 Каждая замена алгоритма фиксируется здесь. Старая версия остаётся
 в документе как `deprecated`, новая описывается отдельно.
 
+## 2026-10-25 — DSML tool-call markup
+
+| Алгоритм | Было | Стало | Причина |
+|---|---|---|---|
+| B8 | JSON, markdown-fenced, preamble, truncation repair | + DSML markup parsing (stage 4) | DeepSeek иногда использует внутренний DSML-формат для tool calls, клиент получал markup как content |
+
+**Что изменилось.** `parseResponse` получил четвёртую стадию —
+`parseDsml`. Поддерживает одиночные и множественные `<invoke>`,
+`arguments`-обёртку и по-параметрический стиль, терпим к обрезанным
+закрывающим тегам. Преамбула до первого маркера возвращается как
+`preamble` и попадает в `content` в `chat.js`. Невалидный DSML
+(маркеры есть, invoke нет) возвращает `dsmlError: true` → HTTP 500
+с типом `dsml_parse_error` вместо пропускания markup в content.
+
 ## 2026-10-20 — retry на server busy; восстановление после thinking stopped
 
 | Алгоритм | Было | Стало | Причина |
