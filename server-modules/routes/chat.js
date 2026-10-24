@@ -567,10 +567,30 @@ async function handleChatRoute(req, res) {
     // all three cases. See algorithms B8 and B9 in
     // docs/algorithms/response.md.
     //
-    const { isToolCall, parsed: parsedResponse, wasTruncated } = parseResponse(result);
+    const {
+        isToolCall,
+        parsed: parsedResponse,
+        wasTruncated,
+        preamble,
+        dsmlError,
+    } = parseResponse(result);
 
     if (wasTruncated) {
         console.log('🔧 Repaired truncated tool_calls JSON (brackets appended)');
+    }
+
+    // DSML marker was present but the markup could not be parsed.
+    // Return a clear error rather than passing raw markup through as
+    // content — the client's tool-calling loop would break.
+    if (dsmlError) {
+        return res.status(500).json({
+            error: {
+                type: 'dsml_parse_error',
+                message:
+                    'The model attempted a tool call using internal DSML ' +
+                    'markup that could not be parsed. Retry the request.',
+            },
+        });
     }
 
     if (!isToolCall && result.includes('"tool_calls"')) {
@@ -590,7 +610,16 @@ async function handleChatRoute(req, res) {
             model: 'deepseek-chat',
             choices: [{
                 index: 0,
-                message: { role: 'assistant', content: null, tool_calls: toolCalls },
+                message: {
+                    role: 'assistant',
+                    // Preamble text before the tool_calls block, if any.
+                    // DeepSeek sometimes writes a short status sentence
+                    // before invoking a tool ("Several URL failures…").
+                    // Preserve it as content; OpenAI allows content and
+                    // tool_calls to coexist.
+                    content: preamble && preamble.length > 0 ? preamble : null,
+                    tool_calls: toolCalls,
+                },
                 finish_reason: wasTruncated ? 'length' : 'tool_calls',
             }],
             usage: {

@@ -14,9 +14,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import parser from '../server-modules/response-parser.js';
+
 // response-parser.js is CommonJS. Import via default to avoid any
 // cjs-module-lexer ambiguity.
-import parser from '../server-modules/response-parser.js';
 
 const {
     stripMarkdownFences,
@@ -25,6 +26,7 @@ const {
     closeBrackets,
     repairTruncatedJson,
     parseResponse,
+    parseDsml,
 } = parser;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -257,4 +259,89 @@ test('parseResponse: real-world truncated fixture', () => {
     assert.equal(r.parsed.tool_calls[0].name, 'write_files');
     assert.ok(Array.isArray(r.parsed.tool_calls[0].arguments.files));
     assert.ok(r.parsed.tool_calls[0].arguments.files.length >= 1);
+});
+
+// ============================================================
+// DSML parsing
+// ============================================================
+
+test('parseDsml: single function call with arguments wrapper', () => {
+    const input = [
+        'Some preamble text.',
+        '',
+        '<｜｜DSML｜｜ calls>',
+        '<｜｜DSML｜｜ invoke name="execute">',
+        '<｜｜DSML｜｜ parameter name="arguments" string="false">{"script": "print(1)"}</｜｜DSML｜｜ parameter>',
+        '</｜｜DSML｜｜ invoke>',
+        '</｜｜DSML｜｜ calls>',
+    ].join('\n');
+
+    const result = parseDsml(input);
+    assert.ok(result !== null);
+    assert.strictEqual(result.tool_calls.length, 1);
+    assert.strictEqual(result.tool_calls[0].function.name, 'execute');
+    assert.deepStrictEqual(
+        JSON.parse(result.tool_calls[0].function.arguments),
+        { script: 'print(1)' }
+    );
+    assert.strictEqual(result.preamble, 'Some preamble text.');
+});
+
+test('parseDsml: multiple invokes', () => {
+    const input = [
+        '<｜｜DSML｜｜ calls>',
+        '<｜｜DSML｜｜ invoke name="execute">',
+        '<｜｜DSML｜｜ parameter name="arguments" string="false">{"script": "a"}</｜｜DSML｜｜ parameter>',
+        '</｜｜DSML｜｜ invoke>',
+        '<｜｜DSML｜｜ invoke name="send_message">',
+        '<｜｜DSML｜｜ parameter name="arguments" string="false">{"to": "critic", "message": "hi"}</｜｜DSML｜｜ parameter>',
+        '</｜｜DSML｜｜ invoke>',
+        '</｜｜DSML｜｜ calls>',
+    ].join('\n');
+
+    const result = parseDsml(input);
+    assert.strictEqual(result.tool_calls.length, 2);
+    assert.strictEqual(result.tool_calls[0].function.name, 'execute');
+    assert.strictEqual(result.tool_calls[1].function.name, 'send_message');
+});
+
+test('parseDsml: no DSML markers returns null', () => {
+    assert.strictEqual(parseDsml('just plain text'), null);
+    assert.strictEqual(parseDsml('{"tool_calls": []}'), null);
+});
+
+test('parseDsml: truncated closing tags are tolerated', () => {
+    const input = [
+        '<｜｜DSML｜｜ calls>',
+        '<｜｜DSML｜｜ invoke name="execute">',
+        '<｜｜DSML｜｜ parameter name="arguments" string="false">{"script": "x"}</｜｜DSML｜｜ parameter>',
+    ].join('\n');
+
+    const result = parseDsml(input);
+    assert.ok(result !== null);
+    assert.strictEqual(result.tool_calls.length, 1);
+    assert.strictEqual(result.tool_calls[0].function.name, 'execute');
+});
+
+test('parseResponse: routes DSML into tool_calls', () => {
+    const input = [
+        'Probing URLs.',
+        '<｜｜DSML｜｜ calls>',
+        '<｜｜DSML｜｜ invoke name="execute">',
+        '<｜｜DSML｜｜ parameter name="arguments" string="false">{"script": "y"}</｜｜DSML｜｜ parameter>',
+        '</｜｜DSML｜｜ invoke>',
+        '</｜｜DSML｜｜ calls>',
+    ].join('\n');
+
+    const r = parseResponse(input);
+    assert.strictEqual(r.isToolCall, true);
+    assert.strictEqual(r.parsed.tool_calls.length, 1);
+    assert.strictEqual(r.preamble, 'Probing URLs.');
+});
+
+test('parseResponse: unparseable DSML yields dsmlError', () => {
+    const input = '<｜｜DSML｜｜ calls>\nno invoke here\n</｜｜DSML｜｜ calls>';
+    const r = parseResponse(input);
+    assert.strictEqual(r.dsmlError, true);
+    assert.strictEqual(r.isToolCall, false);
 });

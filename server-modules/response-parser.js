@@ -5,17 +5,31 @@
  * Parsing and normalization of tool_calls from the model's response.
  *
  * DeepSeek Web is a text interface: the model has no native tool-
- * calling channel. It may wrap its tool_calls JSON in markdown fences,
- * add conversational preamble, or (rarely) drop the closing brackets
- * on long compact output. This module handles all observed shapes and
- * always produces the OpenAI tool_calls format:
+ * calling channel. Three shapes are observed in practice:
  *
+ *   1. Strict JSON:          {"tool_calls": [{"name": ..., "arguments": {...}}]}
+ *   2. JSON in markdown or   ...preamble... ```json { ... } ```
+ *      with preamble:
+ *   3. DSML markup:          <｜｜DSML｜｜ calls> ... <｜｜DSML｜｜ invoke> ... </｜｜DSML｜｜ calls>
+ *
+ * Shape (3) is DeepSeek's internal tool-call format, emitted when the
+ * model decides to call a function via its native protocol instead of
+ * following the "reply with JSON only" instruction. It is functionally
+ * identical to (1) but wrapped in markup.
+ *
+ * All shapes are normalized to the OpenAI tool_calls format:
  *   { id, type: "function", function: { name, arguments: "<json-string>" } }
  *
- * Extracted from chat.js so the logic can be unit-tested without a
- * running server. See algorithms B8 (extraction) and B9 (repair) in
- * docs/algorithms/response.md.
+ * See algorithms B8 (extraction), B9 (truncation repair), and
+ * B6 (server busy detection) in docs/algorithms/response.md.
  */
+
+/**
+ * DSML tag prefix: "<｜｜DSML｜｜" where each ｜ is U+FF5C
+ * (FULLWIDTH VERTICAL LINE). Written via \u escapes so the source
+ * stays readable and does not depend on the file's encoding.
+ */
+const DSML_TAG = '\uFF5C\uFF5CDSML\uFF5C\uFF5C';
 
 /**
  * Remove a leading/trailing markdown code fence from text.
@@ -34,18 +48,8 @@ function stripMarkdownFences(text) {
 /**
  * Extract the first complete top-level JSON object from text.
  *
- * Walks character by character, tracking:
- *   - brace depth (only `{` / `}` outside strings count)
- *   - string state (to skip `{` / `}` inside string literals)
- *   - escape state (to handle `\"` correctly)
- *
- * The naive alternative — a `\{.*\}` regex — fails on any JSON that
- * contains a `}` inside a string value. Tool-call arguments frequently
- * contain code (`if (x) { return 1; }`), so regex truncation is not
- * hypothetical. Brace balancing handles it correctly.
- *
- * Returns the parsed object, or null if no balanced JSON object is found.
- * Callers must try strict JSON.parse first; this is the fallback path.
+ * Walks character by character, tracking brace depth, string state,
+ * and escape state. See B8 for the rationale vs. regex.
  *
  * @param {string} text
  * @returns {object|null}
@@ -83,16 +87,12 @@ function extractBalancedJson(text) {
 /**
  * Normalize one tool_call entry into the OpenAI shape.
  *
- * The model may return either:
- *   - Flat:    { name, arguments }
- *   - Nested:  { function: { name, arguments } }
+ * The model may return either flat { name, arguments } or nested
+ * { function: { name, arguments } }. `arguments` may be an object or
+ * a JSON string. A valid JSON string is passed through verbatim.
  *
- * `arguments` may be an object or a JSON string. A valid JSON string is
- * passed through verbatim; stringifying it again would produce a double-
- * encoded value that breaks clients expecting a single JSON.parse call.
- *
- * @param {object} tc     - Raw tool_call from the model.
- * @param {number} index  - Position in the array, used for id generation.
+ * @param {object} tc     - Raw tool_call.
+ * @param {number} index  - Position in the array, for id generation.
  * @returns {{ id: string, type: 'function', function: { name: string, arguments: string } }}
  */
 function normalizeToolCall(tc, index) {
@@ -102,7 +102,6 @@ function normalizeToolCall(tc, index) {
 
     let argsString;
     if (typeof rawArgs === 'string') {
-        // If it is already valid JSON, pass it through verbatim.
         try { JSON.parse(rawArgs); argsString = rawArgs; }
         catch { argsString = JSON.stringify(rawArgs); }
     } else {
@@ -117,23 +116,7 @@ function normalizeToolCall(tc, index) {
 }
 
 /**
- * Close all unclosed brackets in a JSON fragment.
- *
- * Walks the text once, tracking unclosed `{` and `[` on a stack.
- * At the end, appends the matching closing brackets in reverse order.
- *
- * Returns the repaired string, or null if the fragment is
- * unrecoverable:
- *   - a closer appears with no matching opener (extra `}` / `]`),
- *   - a closer does not match the top of the stack (e.g. `}` inside `[`),
- *   - the fragment ends inside an unterminated string.
- *
- * The string-state and escape-state tracking means `{`, `}`, `[`, `]`
- * inside string values are correctly ignored — critical for tool_call
- * arguments that contain code.
- *
- * This function does NOT modify existing content. It only appends the
- * missing structural brackets.
+ * Close all unclosed brackets in a JSON fragment. See B9.
  *
  * @param {string} text
  * @returns {string|null}
@@ -160,28 +143,14 @@ function closeBrackets(text) {
         }
     }
 
-    // Truncated inside a string: the model stopped mid-value.
-    // We cannot know where the string was supposed to end, so we
-    // refuse to guess. The caller will surface this as content.
     if (inString) return null;
-
-    // Already balanced — nothing to do.
     if (stack.length === 0) return null;
 
     return text + stack.reverse().join('');
 }
 
 /**
- * Attempt to repair a truncated tool_calls JSON fragment by appending
- * the missing closing brackets.
- *
- * Handles only one failure mode: the model produced complete, valid
- * content but forgot to close the outermost array and/or object.
- *
- * Does NOT attempt to recover fragments truncated mid-string. That
- * case is intentionally left to the caller: retrying the request with
- * a clarifying instruction is safer than silently dropping a partial
- * value.
+ * Attempt to repair a truncated tool_calls JSON fragment. See B9.
  *
  * @param {string} text
  * @returns {{ parsed: object } | null}
@@ -201,23 +170,160 @@ function repairTruncatedJson(text) {
 }
 
 /**
+ * Detect and parse DSML tool-call markup into OpenAI tool_calls.
+ *
+ * DeepSeek's internal DSML format:
+ *
+ *   <｜｜DSML｜｜ calls>
+ *   <｜｜DSML｜｜ invoke name="execute">
+ *   <｜｜DSML｜｜ parameter name="arguments" string="false">{"script": "..."}</｜｜DSML｜｜ parameter>
+ *   </｜｜DSML｜｜ invoke>
+ *   </｜｜DSML｜｜ calls>
+ *
+ * Where:
+ *   - Each <invoke> block represents one tool call.
+ *   - name="X" is the function name.
+ *   - Inside invoke, one or more <parameter> blocks.
+ *   - parameter name="argName", string="false" (parse as JSON) or
+ *     "true" (keep as string).
+ *   - DeepSeek's convention is a single parameter named "arguments"
+ *     holding the whole args object as JSON. Both conventions
+ *     (wrapper-style and per-parameter) are handled.
+ *
+ * Lenient on closers: if the response is truncated mid-block, we
+ * still attempt to extract what is there. This is the DSML analogue
+ * of repairTruncatedJson for the JSON shape.
+ *
+ * @param {string} text - Raw model response.
+ * @returns {{ tool_calls: object[], preamble: string } | null}
+ *          Returns null if no DSML markup is present, or if the
+ *          markup is present but no invoke blocks could be extracted.
+ */
+function parseDsml(text) {
+    const invokeStart = new RegExp(
+        `<${DSML_TAG}\\s*invoke\\s+name="([^"]+)"\\s*>`,
+        'g'
+    );
+
+    // Quick check: bail out if no invoke opener at all.
+    if (!invokeStart.test(text)) {
+        return null;
+    }
+    invokeStart.lastIndex = 0; // reset after test()
+
+    // Extract preamble: text before the first DSML marker.
+    const firstDsmlIdx = text.search(
+        new RegExp(`<${DSML_TAG}\\s*(?:calls|invoke)`)
+    );
+    const preamble = firstDsmlIdx > 0
+        ? text.substring(0, firstDsmlIdx).trim()
+        : '';
+
+    const paramRegex = new RegExp(
+        `<${DSML_TAG}\\s*parameter\\s+name="([^"]+)"` +
+        `(?:\\s+string="(true|false)")?\\s*>` +
+        `([\\s\\S]*?)` +
+        `(?:</${DSML_TAG}\\s*parameter>|$)`,
+        'g'
+    );
+
+    const toolCalls = [];
+    let m;
+
+    while ((m = invokeStart.exec(text)) !== null) {
+        const fnName = m[1];
+        const bodyStart = m.index + m[0].length;
+
+        // Locate the end of this invoke block. Lenient: use whichever
+        // comes first among </invoke>, next <invoke, </calls>, or EOT.
+        const rest = text.substring(bodyStart);
+        const closeIdx = rest.search(new RegExp(`</${DSML_TAG}\\s*invoke>`));
+        const nextIdx = rest.search(new RegExp(`<${DSML_TAG}\\s*invoke\\s+name=`));
+        const callsEndIdx = rest.search(new RegExp(`</${DSML_TAG}\\s*calls>`));
+
+        let endIdx = rest.length;
+        if (closeIdx !== -1) endIdx = closeIdx;
+        else if (nextIdx !== -1) endIdx = Math.min(endIdx, nextIdx);
+        else if (callsEndIdx !== -1) endIdx = Math.min(endIdx, callsEndIdx);
+
+        const invokeBody = rest.substring(0, endIdx);
+
+        // Parse parameters within this invoke.
+        paramRegex.lastIndex = 0;
+        const params = {};
+        let p;
+        while ((p = paramRegex.exec(invokeBody)) !== null) {
+            const paramName = p[1];
+            const isString = p[2] === 'true';
+            const rawValue = p[3].trim();
+
+            if (isString) {
+                params[paramName] = rawValue;
+            } else {
+                try {
+                    params[paramName] = JSON.parse(rawValue);
+                } catch {
+                    // Malformed JSON — keep raw. The client will see
+                    // an error when it tries to parse arguments.
+                    params[paramName] = rawValue;
+                }
+            }
+        }
+
+        // DeepSeek convention: single parameter "arguments" carries
+        // the whole args object. Otherwise use params as-is.
+        const finalArgs = 'arguments' in params
+            ? params.arguments
+            : params;
+
+        toolCalls.push({
+            id: `call_${Date.now()}_${toolCalls.length}`,
+            type: 'function',
+            function: {
+                name: fnName,
+                arguments: typeof finalArgs === 'string'
+                    ? finalArgs
+                    : JSON.stringify(finalArgs),
+            },
+        });
+
+        // Advance the outer regex past this invoke block.
+        invokeStart.lastIndex = bodyStart + endIdx;
+    }
+
+    if (toolCalls.length === 0) {
+        return null;
+    }
+
+    return { tool_calls: toolCalls, preamble };
+}
+
+/**
  * Parse a raw model response into either tool_calls or content.
  *
- * Three-stage strategy:
- *   1. Strict JSON.parse — covers the common case, zero overhead.
- *   2. Balanced-brace extraction from the raw text — handles fences,
- *      preamble, and code inside string values.
- *   3. Bracket-close repair — handles truncated JSON.
+ * Stage order:
+ *   1. Strict JSON.parse.
+ *   2. Balanced-brace extraction (fences / preamble / nested braces).
+ *   3. Bracket-close repair (truncated JSON).
+ *   4. DSML markup parsing (truncated tolerant).
  *
- * Returns one of:
- *   { isToolCall: true,  parsed: { tool_calls: [...] }, wasTruncated: bool }
- *   { isToolCall: false, parsed: { content: <raw text> }, wasTruncated: false }
+ * If DSML markers are present but unparseable, the result carries
+ * dsmlError=true so the caller can return a clear 500 instead of
+ * passing raw markup through as content (which breaks the client's
+ * tool-calling loop).
  *
  * @param {string} result - Raw model response text.
- * @returns {{ isToolCall: boolean, parsed: object, wasTruncated: boolean }}
+ * @returns {{
+ *   isToolCall: boolean,
+ *   parsed: object,
+ *   wasTruncated: boolean,
+ *   preamble?: string,
+ *   dsmlError?: boolean
+ * }}
  */
 function parseResponse(result) {
     let parsedResponse = null;
+    let wasTruncated = false;
 
     try {
         parsedResponse = JSON.parse(result);
@@ -228,7 +334,6 @@ function parseResponse(result) {
         parsedResponse = extractBalancedJson(cleaned);
     }
 
-    let wasTruncated = false;
     if (!parsedResponse && result.includes('"tool_calls"')) {
         const repaired = repairTruncatedJson(result);
         if (repaired) {
@@ -239,6 +344,41 @@ function parseResponse(result) {
 
     if (parsedResponse?.tool_calls?.length) {
         return { isToolCall: true, parsed: parsedResponse, wasTruncated };
+    }
+
+    // DSML fallback.
+    const dsml = parseDsml(result);
+    if (dsml) {
+        return {
+            isToolCall: true,
+            parsed: { tool_calls: dsml.tool_calls },
+            wasTruncated: false,
+            preamble: dsml.preamble,
+        };
+    }
+
+    // DSML marker present but no invoke parsed — the markup is
+    // malformed. Do not pass it through as content: the client would
+    // try to process it as an answer and break.
+    if (result.includes(`<${DSML_TAG} calls>`)) {
+        console.warn(
+            `⚠️ DSML markup present but no tool_calls could be extracted. ` +
+            `preview: ${result.substring(0, 200)}`
+        );
+        return {
+            isToolCall: false,
+            parsed: { content: null },
+            wasTruncated: false,
+            dsmlError: true,
+        };
+    }
+
+    // JSON marker present but no tool_calls extracted — existing warning.
+    if (result.includes('"tool_calls"')) {
+        console.warn(
+            `⚠️ tool_calls marker present but not parsed. ` +
+            `preview: ${result.substring(0, 200)}`
+        );
     }
 
     return {
@@ -254,5 +394,6 @@ module.exports = {
     normalizeToolCall,
     closeBrackets,
     repairTruncatedJson,
+    parseDsml,
     parseResponse,
 };
