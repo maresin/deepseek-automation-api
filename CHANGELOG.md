@@ -14,6 +14,8 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-10-25
+
 ### Fixed
 
 - **Tool calls emitted in DSML markup.** DeepSeek occasionally
@@ -29,7 +31,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
   explicitly forbids XML, DSML, YAML, and other markup languages for
   tool calls, in addition to the existing "JSON only" rule. This
   reduces the frequency of DSML markup appearing at all; the DSML
-  parser (previous entry) remains the safety net if it does.
+  parser (see Fixed above) remains the safety net if it does.
 
 ## [1.0.0] — 2026-10-20
 
@@ -81,5 +83,6 @@ stable release.
 - Playwright (bundled Chromium in `./browsers`)
 - `@xenova/transformers` for local embeddings (only when RAG is on)
 
-[Unreleased]: https://github.com/maresin/deepseek-automation-api/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/maresin/deepseek-automation-api/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/maresin/deepseek-automation-api/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/maresin/deepseek-automation-api/releases/tag/v1.0.0
