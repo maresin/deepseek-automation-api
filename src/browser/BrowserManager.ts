@@ -16,7 +16,7 @@
  */
 
 import { chromium, Browser, BrowserContext, Page } from 'playwright-core';
-import { getChromiumExecutablePath } from '../utils/paths.js';
+import { getChromeLaunchOptions, describeBrowserChoice } from './chromeLauncher.js';
 import fs from 'fs';
 
 export class BrowserManager {
@@ -33,10 +33,10 @@ export class BrowserManager {
      *                       used to resume an authenticated session.
      */
     async launch(headless: boolean, viewport: any, storageState?: any): Promise<void> {
-        const chromePath = getChromiumExecutablePath();
+        console.log(`🌐 Browser: ${describeBrowserChoice()}`);
         this.browser = await chromium.launch({
             headless,
-            executablePath: chromePath,
+            ...getChromeLaunchOptions(),
             args: [
                 '--no-sandbox',
                 '--disable-dev-shm-usage',

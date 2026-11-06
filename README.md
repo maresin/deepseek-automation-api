@@ -169,6 +169,7 @@ a sensible default.
 | `DEEPSEEK_EMAIL` | — | Account email (auto-login) |
 | `DEEPSEEK_PASSWORD` | — | Account password (auto-login) |
 | `DEEPSEEK_HEADLESS` | `false` | Run Chromium without a window |
+| `DEEPSEEK_BROWSER` | `chromium` | Browser to drive: `chromium` (bundled under `./browsers`) or `chrome` (system Google Chrome) |
 
 ### Recovery modes
 

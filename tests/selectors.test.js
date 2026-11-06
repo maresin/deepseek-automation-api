@@ -304,10 +304,12 @@ async function run() {
         process.exit(1);
     }
 
-    const pathsMod = await import('../dist/utils/paths.js');
+    const launcherMod = await import('../dist/browser/chromeLauncher.js');
+    const launchOpts = launcherMod.getChromeLaunchOptions();
+    console.log(`🌐 Browser: ${launchOpts.channel ? 'system Chrome' : 'bundled Chromium'}`);
     const browser = await chromium.launch({
         headless: HEADLESS,
-        executablePath: pathsMod.getChromiumExecutablePath(),
+        ...launchOpts,
     });
     const context = await browser.newContext({
         storageState: STATE_PATH,

@@ -16,6 +16,14 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ## [1.0.1] — 2026-10-25
 
+### Added
+
+- **`DEEPSEEK_BROWSER`.** Selects between bundled Chromium
+  (default) and system Google Chrome. Chrome carries a different
+  fingerprint and is often treated more favourably by Cloudflare
+  on the DeepSeek login page — the recommended fallback when the
+  bundled Chromium gets stuck in a captcha loop.
+
 ### Fixed
 
 - **Tool calls emitted in DSML markup.** DeepSeek occasionally

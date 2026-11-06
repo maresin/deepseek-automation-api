@@ -6,6 +6,9 @@
 - npm 8+
 - Свободный DeepSeek-аккаунт (https://chat.deepseek.com)
 - ~500 МБ на диске (Chromium + node_modules)
+- **Chromium:** устанавливается в `./browsers` через Playwright.
+  Альтернативно — системный Google Chrome, выбирается через
+  `DEEPSEEK_BROWSER=chrome` (см. Configuration → Core).
 
 ## Шаги
 

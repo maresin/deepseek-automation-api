@@ -288,13 +288,14 @@ async function validateEnvironment() {
     }
 
     const { chromium } = require('playwright-core');
-    const { getChromiumExecutablePath, getUploadsDir } = require('./dist/utils/paths.js');
+    const { getUploadsDir } = require('./dist/utils/paths.js');
+    const { getChromeLaunchOptions } = require('./dist/browser/chromeLauncher.js');
 
     let browser;
     let context;
     let stateLoadedAtMs = readStateMtime(STATE_PATH);
     try {
-        browser = await chromium.launch({ headless: true, executablePath: getChromiumExecutablePath() });
+        browser = await chromium.launch({ headless: true, ...getChromeLaunchOptions() });
         context = await browser.newContext({
             storageState: STATE_PATH,
             locale: 'en-US',
