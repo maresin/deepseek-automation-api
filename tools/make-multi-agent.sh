@@ -124,6 +124,21 @@ fi
 # sanity checks
 # --------------------------------------------------------------------
 
+# Propagate DEEPSEEK_TOOL_FORMAT from the API root's .env (if any).
+# Without this, each generated agent defaults to "auto" regardless of
+# what the operator configured for the main server.
+TOOL_FORMAT="${DEEPSEEK_TOOL_FORMAT:-}"
+if [[ -z "$TOOL_FORMAT" ]] && [[ -f "$API_ROOT/.env" ]]; then
+    TOOL_FORMAT="$(grep -E '^DEEPSEEK_TOOL_FORMAT=' "$API_ROOT/.env" | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+fi
+if [[ -z "$TOOL_FORMAT" ]]; then
+    TOOL_FORMAT="auto"
+fi
+case "$TOOL_FORMAT" in
+    auto|json|dsml) ;;
+    *) echo "✗ Invalid DEEPSEEK_TOOL_FORMAT='$TOOL_FORMAT'" >&2; exit 1 ;;
+esac
+
 API_STATE="$API_ROOT/state.json"
 
 # In stateless mode we need state.json as the source of cookies.
@@ -267,6 +282,20 @@ PORT=$port
 DEEPSEEK_CDP_URL=$CDP_URL
 DEEPSEEK_AGENT_NAME=$name
 
+# Shared Chrome: no agent may shut it down. Also disable autolaunch —
+# if the caller (user or Pingis) forgot to start Chrome, that is a
+# configuration error to surface, not to silently fix.
+DEEPSEEK_CDP_AUTOCLOSE=false
+DEEPSEEK_CDP_AUTOLAUNCH=true
+
+# In multi-agent deployments, do not inherit ~/.config/google-chrome
+# on first run. The user's main Chrome profile may hold stale Google
+# or DeepSeek sessions; inheriting them causes Cloudflare verification
+# and re-login. With this flag the CDP profile starts empty on the
+# first ever run; log in once in that profile, then it is self-
+# contained and self-refreshing.
+DEEPSEEK_CDP_COPY_DEFAULT_PROFILE=false
+
 # Per-agent isolated state.
 DEEPSEEK_CHAT_STATE_PATH=./chat_state.json
 DEEPSEEK_API_KEY_PATH=./.api-key
@@ -277,6 +306,9 @@ RAG_DATA_DIR=./rag_data
 ENABLE_RESTORE=$RESTORE
 ENABLE_SNAPSHOT=$SNAPSHOT
 ENABLE_RAG=$RAG
+
+# Tool-call format (propagated from API root .env)
+DEEPSEEK_TOOL_FORMAT=$TOOL_FORMAT
 EOF
     else
         cat > "$agent_dir/agent.env" <<EOF
@@ -301,6 +333,9 @@ DEEPSEEK_HEADLESS=true
 ENABLE_RESTORE=$RESTORE
 ENABLE_SNAPSHOT=$SNAPSHOT
 ENABLE_RAG=$RAG
+
+# Tool-call format (propagated from API root .env)
+DEEPSEEK_TOOL_FORMAT=$TOOL_FORMAT
 EOF
     fi
 

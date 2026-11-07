@@ -183,71 +183,7 @@ function findCookiesPath(profileDir: string): string | null {
  * to contain the host name), but for our purpose — "is there any
  * chance this file has a DeepSeek session" — it is accurate enough.
  */
-function cookieFileContains(cookiesPath: string, needle: string): boolean {
-    try {
-        const buf = fs.readFileSync(cookiesPath);
-        return buf.includes(Buffer.from(needle, 'utf8'));
-    } catch {
-        return false;
-    }
-}
 
-function syncAuthFilesFromSource(targetProfileDir: string): void {
-    const sourceProfile = path.join(os.homedir(), '.config', 'google-chrome');
-    if (!fs.existsSync(sourceProfile)) return;
-
-    const syncFile = (relPath: string): boolean => {
-        const src = path.join(sourceProfile, relPath);
-        const tgt = path.join(targetProfileDir, relPath);
-        if (!fs.existsSync(src) || !fs.existsSync(tgt)) return false;
-        const srcMtime = fs.statSync(src).mtimeMs;
-        const tgtMtime = fs.statSync(tgt).mtimeMs;
-        if (srcMtime <= tgtMtime) return false;
-        fs.copyFileSync(src, tgt);
-        return true;
-    };
-
-    // Cookies — find actual path (Network/Cookies on Chrome 120+)
-    const srcCookies = findCookiesPath(sourceProfile);
-    const tgtCookies = findCookiesPath(targetProfileDir);
-    if (srcCookies && tgtCookies) {
-        const srcMtime = fs.statSync(srcCookies).mtimeMs;
-        const tgtMtime = fs.statSync(tgtCookies).mtimeMs;
-        // Safety: never overwrite a live DeepSeek session with a
-        // stale source that has already lost it. In multi-agent
-        // deployments the user logs in to DeepSeek in the CDP
-        // profile; if ~/.config/google-chrome has an older Cookies
-        // file without ds_session_id, sync would erase the live
-        // session and force re-login in every tab.
-        const srcHasDs = cookieFileContains(srcCookies, 'ds_session_id');
-        const tgtHasDs = cookieFileContains(tgtCookies, 'ds_session_id');
-        if (tgtHasDs && !srcHasDs) {
-            console.log(
-                `→ Skipped Cookies sync: CDP profile has a live ` +
-                `DeepSeek session that source would erase`
-            );
-        } else if (srcMtime > tgtMtime) {
-            fs.copyFileSync(srcCookies, tgtCookies);
-            for (const suffix of ['-wal', '-shm']) {
-                const srcW = srcCookies + suffix;
-                const tgtW = tgtCookies + suffix;
-                if (fs.existsSync(srcW)) {
-                    try {
-                        fs.copyFileSync(srcW, tgtW);
-                    } catch { /* locked by running Chrome; non-fatal */ }
-                }
-            }
-            console.log(`→ Synced Cookies from source profile`);
-        }
-    }
-
-    if (syncFile('Local State')) {
-        console.log(`→ Synced Local State from source profile`);
-    }
-    if (syncFile(path.join('Default', 'Login Data'))) {
-        // quiet — this one rarely matters, no log
-    }
-}
 
 /**
  * Ensure a Chrome with CDP is reachable at the configured URL.
@@ -369,14 +305,16 @@ async function _ensureChromeCdpInner(): Promise<boolean> {
         } else {
             console.log(`ℹ️  Starting with empty profile at ${config.profileDir}`);
         }
-    } else if (config.copyFromDefault) {
-        // Profile already exists. Sync auth files (cookies, Local
-        // State) from the user's main Chrome, but only when the
-        // source is newer. Google and DeepSeek rotate tokens; without
-        // this sync the profile goes stale after ~30 minutes and
-        // Cloudflare blocks the login.
-        syncAuthFilesFromSource(config.profileDir);
-    }
+        }
+    // No sync on subsequent runs: the CDP profile is a
+    // self-contained browser profile. Chrome refreshes its own
+    // cookies there. Copying from ~/.config/google-chrome was tried
+    // and reverted — it overwrote fresh Google/DeepSeek sessions
+    // with stale source data whenever the source's Cookies file was
+    // newer by mtime but its sessions were expired. That forced
+    // re-login and, in one reported case, triggered a Cloudflare
+    // challenge that led to a DeepSeek ban. The only safe copy is
+    // the initial one into an empty profile (copyProfileFromDefault).
 
     console.log(`→ Launching Chrome with CDP on port ${config.port}`);
     console.log(`  binary:  ${config.chromePath}`);
