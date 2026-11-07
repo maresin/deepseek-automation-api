@@ -71,7 +71,7 @@ export function getCdpConfig(): CdpConfig {
             : path.join(os.homedir(), '.config', 'google-chrome-cdp'),
         chromePath: process.env.DEEPSEEK_CHROME_PATH || 'google-chrome-stable',
         autolaunch: process.env.DEEPSEEK_CDP_AUTOLAUNCH !== 'false',
-        autoclose: process.env.DEEPSEEK_CDP_AUTOCLOSE === 'true',
+        autoclose: process.env.DEEPSEEK_CDP_AUTOCLOSE === 'false',
         copyFromDefault: process.env.DEEPSEEK_CDP_COPY_DEFAULT_PROFILE !== 'false',
         extraArgs: (process.env.DEEPSEEK_CHROME_EXTRA_ARGS || '')
             .split(/\s+/).filter(Boolean),
