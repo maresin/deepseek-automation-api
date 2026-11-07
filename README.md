@@ -169,7 +169,9 @@ a sensible default.
 | `DEEPSEEK_EMAIL` | — | Account email (auto-login) |
 | `DEEPSEEK_PASSWORD` | — | Account password (auto-login) |
 | `DEEPSEEK_HEADLESS` | `false` | Run Chromium without a window |
-| `DEEPSEEK_BROWSER` | `chromium` | Browser to drive: `chromium` (bundled under `./browsers`) or `chrome` (system Google Chrome) |
+| `DEEPSEEK_CDP_URL` | — | Switch to CDP mode: connect to a running Chrome. See [CDP mode](#cdp-mode) below |
+| `DEEPSEEK_BROWSER` | `chromium` | Browser for stateless mode: `chromium` (bundled) or `chrome` (system) |
+| `DEEPSEEK_TOOL_FORMAT` | `auto` | Tool-call format inside the chat: `auto`, `json`, or `dsml` |
 
 ### Recovery modes
 
@@ -210,6 +212,61 @@ a sensible default.
 
 > The embedding model (`Xenova/all-MiniLM-L6-v2`) is loaded on the first
 > RAG request. Expect a 2–3 second delay on that one request.
+
+---
+
+### CDP mode
+
+DeepSeek's login page is protected by Cloudflare Turnstile. An
+automated Chromium is fingerprinted and rejected in a captcha loop
+that no amount of retrying can escape. CDP mode solves this by
+removing login from the critical path: the API connects to a Chrome
+you start yourself, with a normal profile and normal flags. Every
+attempt where Playwright *launches* Chrome leaves a fingerprint
+Cloudflare does not trust; a CDP attach does not.
+
+```bash
+# One-time: prepare Chrome with a dedicated profile
+google-chrome-stable \
+    --remote-debugging-port=9222 \
+    --remote-allow-origins='*' \
+    --user-data-dir="$HOME/.config/google-chrome-cdp" \
+    --no-first-run &
+
+# In that Chrome:
+#   1. Sign in to your Google account
+#   2. Settings → Languages → add English, move to top
+#   3. Open chat.deepseek.com, log in once, solve the captcha
+
+# Then in .env:
+DEEPSEEK_CDP_URL=http://127.0.0.1:9222
+```
+
+The API now connects to this Chrome instead of launching its own.
+The Chrome profile carries the DeepSeek session; no login or captcha
+will be triggered by the API. **Do not delete**
+`~/.config/google-chrome-cdp` — it holds the session.
+
+Autolaunch behaviour:
+- **Chrome already running** → API uses it, never touches its lifecycle.
+- **Chrome not running** and `DEEPSEEK_CDP_AUTOLAUNCH=true` (default)
+  → API launches it with the profile above.
+- **Shutdown** — API closes Chrome only if it launched it and
+  `DEEPSEEK_CDP_AUTOCLOSE=true`. Default is `false`: leave Chrome
+  running so the next start reuses the tab.
+
+Multi-agent: `tools/make-multi-agent.sh --cdp-url URL` generates a
+deployment where each agent opens its own tab in the same Chrome.
+Full walkthrough:
+[`docs/guides/building-applications.md`](docs/guides/building-applications.md).
+
+### Per-task orchestrators
+
+If your client starts an agent per task (Pingis, similar tools),
+set `ENABLE_RESTORE=false` in each agent's `.env`. Otherwise the
+agent returns to the last chat on every restart; per-task
+isolation requires a fresh chat per task.
+
 
 ---
 

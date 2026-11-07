@@ -1,7 +1,7 @@
 site_name: DeepSeek Automation API
 site_description: Документация по автоматизации DeepSeek
 site_author: Mikhail Maresin
-copyright: 2026
+copyright: "2026 Mikhail Maresin"
 
 # Конфиг лежит в docs/, а не в корне.
 # Запуск: mkdocs serve -f docs/mkdocs.yml

@@ -44,7 +44,7 @@ PLAYWRIGHT_BROWSERS_PATH=./browsers npx playwright install chromium
 Это создаст `./browsers/chromium-<version>/`. Именно сюда смотрит
 `src/utils/paths.ts` → `getChromiumExecutablePath()`.
 
-### Настройка Chrome для CDP-режима
+### Настройка Chrome для CDP-режима {#настройка-chrome-для-cdp-режима}
 
 CDP-режим (`DEEPSEEK_CDP_URL`) подключает API к уже запущенному
 Chrome. Это единственный режим, который надёжно проходит Cloudflare

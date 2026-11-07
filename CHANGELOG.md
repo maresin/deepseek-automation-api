@@ -14,6 +14,106 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-11-08
+
+Consolidates CDP-mode hardening after v1.2.0. Six fixes, two
+additions. Behavioural change: `detectServerBusy` is now icon-only
+(no text matching in the decision).
+
+### Added
+
+- **`DEEPSEEK_TOOL_FORMAT`** — `auto` (default), `json`, `dsml`.
+  Selects the prompt that asks the model for a tool-call format
+  inside the chat (`tools_prompt.txt` or `tools_prompt_dsml.txt`).
+  The API always returns standard OpenAI JSON to the client.
+- **`prompts/tools_prompt_dsml.txt`** — prompt asking the model to
+  use its native DSML markup. Reduces the "sometimes JSON,
+  sometimes DSML" drift on tool-call requests.
+- **`acquireLaunchLock`** — file lock around Chrome autolaunch.
+  Two agents starting at the same instant no longer launch two
+  Chrome instances.
+- **`pid_is_live_agent`, `kill_pid_hard`, `kill_agent_on_port`**
+  in `templates/lib/common.sh` — lifecycle helpers. Reject
+  zombies and reused PIDs; escalate SIGTERM to SIGKILL; identify
+  port holders by cmdline.
+
+### Fixed
+
+- **`syncAuthFilesFromSource` removed.** Copied Cookies from
+  `~/.config/google-chrome` into the CDP profile by mtime. When
+  the source had an expired Google session but a newer Cookies
+  file, sync overwrote the live session in the CDP profile.
+  Cloudflare challenged the fingerprint; in one reported case
+  this led to a DeepSeek account ban. The CDP profile is now
+  self-contained. Only `copyProfileFromDefault` remains, and it
+  runs only when the target directory is empty.
+- **`initFromExistingFiles` — `.api-key` alone is enough.** In
+  CDP mode `state.json` is never written; the old check required
+  both files and never initialised the client. Users had to
+  create an empty `state.json` as a workaround.
+- **`validateMessages` — `content: null` accepted.** Per OpenAI
+  spec, assistant messages with `tool_calls` must have
+  `content: null`. Previously a normal round-trip failed
+  validation before the model saw the tool result.
+- **`buildPrompt` — `Assistant: [tool calls: name]`** instead of
+  `Assistant: null`. The latter confused the model on empty
+  turns and could hang the tool-calling loop.
+- **`parseLenientJson` — literal newlines and tabs in DSML
+  parameters.** Strict JSON forbids raw newlines; model output
+  often contains them inside long `script` arguments.
+- **DSML diagnostics in `parseResponse`.** Logs has `<invoke>`,
+  has `<parameter>`, closers, and head/tail preview. Future
+  variants can be identified from the log without a debugger.
+- **`detectServerBusy` — icon-only, global scan.** DeepSeek
+  changes the label without notice: "Server busy", "Messages too
+  frequent", "Validation failed" are the same state with different
+  text. The retry icon is stable. The scan is global (the
+  "Validation failed" badge appears in the input area, not in a
+  rendered message).
+- **`start-all.sh` — force-cleanup instead of refusing.** Leftover
+  agents from a crashed or unclean shutdown are killed by PID and
+  by port; stale PID files removed. A clean tree no longer blocks
+  with "already running".
+- **`stop-all.sh` — SIGTERM, then SIGKILL.** Escalates after 5s;
+  port fallback for processes whose PID file was stale or missing.
+  Foreign processes on an agent port are rejected, never killed.
+
+### Changed
+
+- **`detectServerBusy` no longer uses text matching in the
+  decision.** Text is still captured by diagnostics, not by the
+  busy path. Classic "Server busy" and "Messages too frequent"
+  behave as before (icon detected); "Validation failed" is now
+  detected as well.
+- **`make-multi-agent.sh` in CDP mode** sets
+  `DEEPSEEK_CDP_AUTOCLOSE=false`,
+  `DEEPSEEK_CDP_AUTOLAUNCH=true`, and
+  `DEEPSEEK_CDP_COPY_DEFAULT_PROFILE=false` in every generated
+  `agent.env`. Multi-agent Chrome is a shared resource: no agent
+  may kill it, and the first agent launches it if needed.
+- **`DEEPSEEK_TOOL_FORMAT` propagated** from the API root `.env`
+  to each generated `agent.env`.
+
+### Documentation
+
+- `docs/guides/building-applications.md`: CDP mode subsection
+  under the multi-agent chapter.
+- `docs/guides/installation.md`: Chrome setup checklist for CDP
+  mode — Google account, English as preferred language, one-time
+  login to chat.deepseek.com. Without these the API starts but
+  DeepSeek shows verification, and text selectors fail on
+  non-English UI.
+
+### Known limitations
+
+- Server-busy retry (5-minute backoff) has not yet fired on a real
+  busy signal; icon detection is verified, the backoff path is
+  not.
+- `DEEPSEEK_CDP_AUTOCLOSE=true` with `AUTOLAUNCH=true` in a
+  multi-agent deployment is untested (multi-agent uses `false`).
+- RAG isolation across a CDP transition (snapshot + context
+  overflow) has not been stress-tested.
+
 ## [1.2.0] — 2026-11-07
 
 ### Added
@@ -199,7 +299,8 @@ stable release.
 - Playwright (bundled Chromium in `./browsers`)
 - `@xenova/transformers` for local embeddings (only when RAG is on)
 
-[Unreleased]: https://github.com/maresin/deepseek-automation-api/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/maresin/deepseek-automation-api/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/maresin/deepseek-automation-api/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/maresin/deepseek-automation-api/compare/v1.0.1...v1.2.0
 [1.0.1]: https://github.com/maresin/deepseek-automation-api/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/maresin/deepseek-automation-api/releases/tag/v1.0.0
