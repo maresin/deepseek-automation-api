@@ -14,7 +14,7 @@ const registerRoute = require('./server-modules/routes/register');
 const chatRoute = require('./server-modules/routes/chat');
 const { uploadFile } = require('./server-modules/routes/files');
 const { initFromExistingFiles } = require('./server-modules/init');
-const { bothFilesExist } = require('./server-modules/utils');
+const { bothFilesExist, getApiKey } = require('./server-modules/utils');
 const { getClient, isReady } = require('./server-modules/state');
 const singleRoute = require('./server-modules/routes/single.js');
 const { Selectors } = require('./dist/browser/Selectors.js');
@@ -409,8 +409,8 @@ const server = app.listen(PORT, () => {
     console.log(`   POST /v1/chat/single - Single request (with optional context insertion)`);
     console.log(`   POST /v1/files - Upload file (OpenAI-compatible, returns file_id)`);
     console.log(`   GET /health - Status`);
-    if (bothFilesExist()) {
-        console.log(`\n📂 Session files detected. Will restore automatically...`);
+    if (getApiKey()) {
+        console.log(`\n📂 API key detected. Will restore automatically...`);
     } else {
         console.log(`\n💡 No session. Register: POST /v1/register`);
     }

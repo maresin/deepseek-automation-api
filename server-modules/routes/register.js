@@ -9,6 +9,7 @@
  *   { api_key: string, message: string }
  */
 
+const fs = require('fs');
 const {
     getApiKey,
     saveApiKey,
@@ -23,11 +24,21 @@ const { getClientConfig } = require('../clientConfig');
 module.exports = async function registerRoute(req, res) {
     const { email, password } = req.body;
 
-    if (isReady() && bothFilesExist()) {
-        return res.json({ api_key: getApiKey(), message: 'Session already exists' });
+    // If we already have an API key, return it — do not regenerate.
+    // The old check required both state.json AND .api-key; in CDP
+    // mode state.json is intentionally absent, so the old check always
+    // failed and wiped the key on every POST.
+    const existingKey = getApiKey();
+    if (existingKey && isReady()) {
+        return res.json({ api_key: existingKey, message: 'Session already exists' });
     }
 
-    if (!bothFilesExist()) deleteSessionFiles();
+    // Only clean up if neither file exists (first-ever run).
+    const keyExists = fs.existsSync(process.env.DEEPSEEK_API_KEY_PATH || './.api-key');
+    const stateExists = fs.existsSync(process.env.DEEPSEEK_STATE_PATH || './state.json');
+    if (!keyExists && !stateExists) {
+        deleteSessionFiles();
+    }
 
     const apiKey = generateApiKey();
     const config = getClientConfig({ email, password });

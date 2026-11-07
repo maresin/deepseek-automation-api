@@ -363,10 +363,30 @@ export class DeepSeekClient {
         if (this.isInitialized) return;
 
         const savedBrowserState = await this.loadState();
-        const isAuthenticated = savedBrowserState && savedBrowserState.cookies && savedBrowserState.cookies.length > 0;
-        await this.browserManager.launch(this.config.headless, this.config.viewport, savedBrowserState);
+        const savedChatState = await this.loadChatState();
+        const expectedChatId = savedChatState?.lastChatId || null;
 
-        if (isAuthenticated) {
+        const isCdpMode = !!process.env.DEEPSEEK_CDP_URL;
+        const isAuthenticated = isCdpMode ||
+            (savedBrowserState && savedBrowserState.cookies && savedBrowserState.cookies.length > 0);
+
+        await this.browserManager.launch(
+            this.config.headless,
+            this.config.viewport,
+            savedBrowserState,
+            expectedChatId,
+        );
+
+        // In CDP mode, launchViaCDP may have found an existing tab
+        // already on the right chat URL. In that case, navigating to the
+        // main page would throw away the reuse and force a restore.
+        const currentUrl = this.page?.url() || '';
+        const alreadyOnChat = isCdpMode && expectedChatId &&
+            currentUrl.includes(`/a/chat/s/${expectedChatId}`);
+
+        if (alreadyOnChat) {
+            console.log(`✅ Tab already on chat ${expectedChatId}`);
+        } else if (isAuthenticated) {
             await this.browserManager.goto('https://chat.deepseek.com');
         } else {
             await this.browserManager.goto('https://chat.deepseek.com/sign_in');
@@ -395,10 +415,28 @@ export class DeepSeekClient {
 
         const enableRestore = process.env.ENABLE_RESTORE === 'true';
         if (enableRestore) {
-            const result = await this.restorePrevious();
-            if (!result.ok) {
-                console.warn(`⚠️ restorePrevious failed (${result.reason}), starting fresh`);
-                await this.startFresh();
+            // If tab reuse already put us on the saved chat, skip
+            // restorePrevious entirely — it would click through the
+            // sidebar and waste 3-5 seconds.
+            const postNavUrl = this.page?.url() || '';
+            const postNavMatch = postNavUrl.match(/\/a\/chat\/s\/([a-zA-Z0-9_-]+)/);
+            const postNavChatId = postNavMatch ? postNavMatch[1] : null;
+
+            if (expectedChatId && postNavChatId === expectedChatId) {
+                console.log(`✅ Already on chat ${expectedChatId} (tab reused)`);
+                this.currentChatId = expectedChatId;
+                this.chatStarted = savedChatState?.chatStarted ?? false;
+                this.ragSearchActive = savedChatState?.ragSearchActive ?? false;
+                this.contextManager.totalChars = savedChatState?.totalChars ?? 0;
+                this.contextManager.snapshot70Done = savedChatState?.snapshot70Done ?? false;
+                this.contextManager.snapshot90Done = savedChatState?.snapshot90Done ?? false;
+                this.resetSystemPrompts();
+            } else {
+                const result = await this.restorePrevious();
+                if (!result.ok) {
+                    console.warn(`⚠️ restorePrevious failed (${result.reason}), starting fresh`);
+                    await this.startFresh();
+                }
             }
         } else {
             await this.startFresh();

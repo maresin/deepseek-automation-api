@@ -18,7 +18,10 @@ const { DeepSeekClient } = require('../dist');
 const { getClientConfig } = require('./clientConfig');
 
 async function initFromExistingFiles() {
-    if (!bothFilesExist()) return;
+    // In CDP mode, state.json is not written — the Chrome profile is
+    // the source of truth. But .api-key is still created and must be
+    // enough to trigger initialization on restart. Require only the
+    // key, not both files.
 
     console.log('📂 Found existing session files. Attempting to restore...');
 
