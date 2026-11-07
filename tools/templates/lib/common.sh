@@ -167,3 +167,78 @@ wait_for_ready() {
     echo "  $label did not become ready in ${timeout}s (last code: $code)" >&2
     return 1
 }
+
+# ---------------------------------------------------------------
+# Process lifecycle helpers
+# ---------------------------------------------------------------
+
+# Check if a PID corresponds to a live agent process.
+# Rejects zombies (stat Z) and PIDs reused by unrelated processes.
+pid_is_live_agent() {
+    local pid="$1"
+    [[ -n "$pid" ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    local state
+    state=$(ps -p "$pid" -o stat= 2>/dev/null | tr -d ' ')
+    case "$state" in
+        Z*) return 1 ;;
+    esac
+    local cmd
+    cmd=$(ps -p "$pid" -o cmd= 2>/dev/null || true)
+    case "$cmd" in
+        *server.js*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Kill a PID: SIGTERM, wait up to 5s, SIGKILL if still alive.
+kill_pid_hard() {
+    local pid="$1"
+    local label="${2:-process}"
+    [[ -n "$pid" ]] || return 0
+    pid_is_live_agent "$pid" || return 0
+    echo "→ Killing $label (PID $pid, SIGTERM)"
+    kill -TERM "$pid" 2>/dev/null || true
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        pid_is_live_agent "$pid" || return 0
+        sleep 0.5
+    done
+    echo "  $label did not exit after SIGTERM, sending SIGKILL"
+    kill -KILL "$pid" 2>/dev/null || true
+    sleep 1
+    if pid_is_live_agent "$pid"; then
+        echo "  ⚠️ $label survived SIGKILL" >&2
+        return 1
+    fi
+    return 0
+}
+
+# PID of the process listening on a TCP port, or empty.
+port_holder_pid() {
+    local port="$1"
+    [[ -n "$port" ]] || return 1
+    ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' | head -1
+}
+
+# Kill our agent process holding a port; refuse foreign processes.
+# Return codes: 0 — nothing to do, 1 — killed, 2 — foreign, refuse.
+kill_agent_on_port() {
+    local port="$1"
+    local label="${2:-agent}"
+    [[ -n "$port" ]] || return 0
+    ss -tln 2>/dev/null | grep -q ":$port " || return 0
+    local holder
+    holder="$(port_holder_pid "$port")"
+    if [[ -z "$holder" ]]; then
+        echo "  ⚠️ Port $port is bound but PID is not visible (root?)" >&2
+        return 2
+    fi
+    if pid_is_live_agent "$holder"; then
+        kill_pid_hard "$holder" "$label on port $port"
+        return 1
+    fi
+    echo "✗ Port $port held by a foreign process (PID $holder)" >&2
+    echo "  Refusing to kill. Stop it manually or change PORT." >&2
+    return 2
+}

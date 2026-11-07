@@ -26,6 +26,8 @@ async function initFromExistingFiles() {
     console.log('📂 Found existing session files. Attempting to restore...');
 
     const apiKey = getApiKey();
+    if (!apiKey) return;
+
     const config = getClientConfig();
     const newClient = new DeepSeekClient(config);
 

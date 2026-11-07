@@ -19,22 +19,30 @@ if [[ ! -f "$API_PATH/server.js" ]]; then
 fi
 
 # Refuse to start if any agent is already running.
+# Force-stop any leftover agents from this deployment. A crashed or
+# unclean shutdown must not block a restart. Foreign processes on an
+# agent port are rejected, not killed.
 if compgen -G "$ROOT/agents/*/agent.pid" > /dev/null; then
-    alive=0
     for pidfile in "$ROOT"/agents/*/agent.pid; do
         [[ -f "$pidfile" ]] || continue
         pid="$(cat "$pidfile" 2>/dev/null || true)"
-        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-            alive=1
-            break
+        if pid_is_live_agent "$pid"; then
+            kill_pid_hard "$pid" "leftover agent (from $(basename "$pidfile"))"
         fi
+        rm -f "$pidfile"
     done
-    if [[ "$alive" -eq 1 ]]; then
-        echo "✗ Some agents are already running." >&2
-        echo "  Run $HERE/stop-all.sh first." >&2
-        exit 1
-    fi
 fi
+
+for agent_dir in "$ROOT"/agents/*/; do
+    [[ -d "$agent_dir" ]] || continue
+    port="$(read_kv "$agent_dir/agent.env" PORT 2>/dev/null || true)"
+    [[ -n "$port" ]] || continue
+    if ss -tln 2>/dev/null | grep -q ":$port "; then
+        rc=0
+        kill_agent_on_port "$port" "$(basename "$agent_dir")" || rc=$?
+        [[ "$rc" -eq 2 ]] && exit 1
+    fi
+done
 
 # Collect agent directories into an array.
 dirs=()
