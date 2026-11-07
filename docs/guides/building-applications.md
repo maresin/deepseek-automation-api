@@ -284,6 +284,40 @@ DeepSeek cookies живут 1–3 месяца. Симптомы:
 Скрипт `refresh-state.sh` вручную не запускается — только после
 свежего логина в API.
 
+### CDP mode
+
+В дополнение к stateless-режиму (общий `shared-state.json`, каждый
+агент запускает свой Chromium), `make-multi-agent.sh --cdp-url URL`
+генерирует CDP-деплой:
+
+```bash
+./tools/make-multi-agent.sh ~/my-project --agents 2 \
+    --cdp-url http://127.0.0.1:9222
+```
+
+**Что иначе:**
+
+- `shared-state.json` не копируется. Куки живут в Chrome-профиле.
+- В каждом `agent.env` — `DEEPSEEK_CDP_URL` и `DEEPSEEK_AGENT_NAME`.
+- Каждый агент открывает **свою вкладку** в общем Chrome. Вкладки
+  изолированы: свой `lastChatId`, свой `uploads-N/`, свой RAG-индекс.
+- При `stop-all.sh` каждый агент закрывает **свою** вкладку. Chrome
+  остаётся — для других агентов и для tab reuse следующего запуска.
+- Chrome **не обязательно** запускать до `start-all.sh`: первый
+  агент запустит его через `ensureChromeCdp`, второй подхватит.
+
+**Автозапуск Chrome.** `ensureChromeCdp` проверяет `/json/version`
+на `DEEPSEEK_CDP_URL`. Если порт не отвечает и
+`DEEPSEEK_CDP_AUTOLAUNCH=true` (default), Chrome запускается с
+профилем из `DEEPSEEK_CDP_PROFILE_DIR`. Профиль копируется из
+`~/.config/google-chrome` при первом запуске — это и даёт куки
+Google + DeepSeek + `cf_clearance`, которые обходят Cloudflare.
+
+**Pingis.** Расширение само запускает Chrome и передаёт
+`--cdp-url` при генерации. API не трогает lifecycle внешнего
+Chrome: если порт уже отвечает, `ensureChromeCdp` только
+подключается.
+
 ---
 
 ## Обработка ошибок в мультиагентной системе
