@@ -5,18 +5,21 @@
 # Usage:
 #     ./tools/make-multi-agent.sh <target-dir> [options]
 #
-# The <target-dir> is the user's project root. A subdirectory named
-# "deepseek-agents" (overridable with --subdir) is created inside it.
-# All generated files live under that subdirectory; the project root
-# is left untouched apart from that one subfolder.
+# Two deployment modes:
 #
-# Prerequisite: the API must have been started at least once and a
-# state.json must exist in the API root. This file is the DeepSeek
-# cookie session, established through a normal (non-automated) login.
+#   - Stateless (default). Each agent launches its own browser and
+#     restores cookies from shared-state.json (copied from the API
+#     root's state.json). Works when Cloudflare is not blocking.
+#
+#   - CDP (--cdp-url URL). Each agent connects to an already-running
+#     Chrome via CDP. The Chrome profile carries the DeepSeek
+#     session; shared-state.json is not used. Bypasses Cloudflare
+#     Turnstile because the Chrome is user-launched.
 #
 # Example:
 #     cd deepseek-automation-api
 #     ./tools/make-multi-agent.sh ~/my-project --agents 3 --base-port 3010
+#     ./tools/make-multi-agent.sh ~/my-project --agents 2 --cdp-url http://127.0.0.1:9222
 
 set -euo pipefail
 
@@ -36,6 +39,7 @@ RAG=true
 SUBDIR="deepseek-agents"
 FORCE=false
 UPDATE_STATE=false
+CDP_URL=""
 TARGET=""
 
 usage() {
@@ -56,14 +60,23 @@ Options:
     --rag BOOL          ENABLE_RAG      (default: true)
     --subdir NAME       name of the generated subdirectory
                         (default: deepseek-agents)
+    --cdp-url URL       generate a CDP-mode deployment: each agent
+                        connects to the Chrome at URL via CDP,
+                        instead of launching its own browser.
+                        shared-state.json is not copied.
+                        Chrome must be running at URL when agents
+                        start, but does not need to be up when this
+                        script runs (a warning is printed if it is not).
     --force             overwrite an existing subdirectory
     --update-state      only refresh shared-state.json in an
-                        existing deployment; do not touch anything else
+                        existing deployment (stateless mode only;
+                        no-op in CDP deployments)
     -h, --help          show this help and exit
 
 Examples:
     ./tools/make-multi-agent.sh ~/project
     ./tools/make-multi-agent.sh ~/project --agents 3 --base-port 3010
+    ./tools/make-multi-agent.sh ~/project --agents 2 --cdp-url http://127.0.0.1:9222
     ./tools/make-multi-agent.sh ~/project --update-state
 
 EOF
@@ -81,6 +94,7 @@ while [[ $# -gt 0 ]]; do
         --snapshot)     SNAPSHOT="$2"; shift 2 ;;
         --rag)          RAG="$2"; shift 2 ;;
         --subdir)       SUBDIR="$2"; shift 2 ;;
+        --cdp-url)      CDP_URL="$2"; shift 2 ;;
         --force)        FORCE=true; shift ;;
         --update-state) UPDATE_STATE=true; shift ;;
         -h|--help)      usage; exit 0 ;;
@@ -107,80 +121,37 @@ if [[ -z "$TARGET" ]]; then
 fi
 
 # --------------------------------------------------------------------
-# input validation
-# --------------------------------------------------------------------
-
-validate_args() {
-    # --subdir: relative, no '..', not '.' or '..', not empty.
-    # With --force the script does `rm -rf "$TARGET/$SUBDIR"`, so a
-    # bad value here is a data-loss bug, not a warning.
-    if [[ -z "$SUBDIR" || "$SUBDIR" == "." || "$SUBDIR" == ".." ]]; then
-        echo "✗ --subdir must be a non-empty path other than '.' or '..'" >&2
-        echo "  Got: ${SUBDIR:-(empty)}" >&2
-        exit 1
-    fi
-    if [[ "$SUBDIR" == /* ]]; then
-        echo "✗ --subdir must be relative, not absolute" >&2
-        echo "  Got: $SUBDIR" >&2
-        exit 1
-    fi
-    if [[ "$SUBDIR" == *..* ]]; then
-        echo "✗ --subdir must not contain '..'" >&2
-        echo "  Got: $SUBDIR" >&2
-        exit 1
-    fi
-
-    # --agents: 1..32. Each agent is a separate Chromium (~300 MB).
-    if ! [[ "$AGENTS" =~ ^[0-9]+$ ]] || (( AGENTS < 1 || AGENTS > 32 )); then
-        echo "✗ --agents must be an integer between 1 and 32" >&2
-        echo "  Got: $AGENTS" >&2
-        exit 1
-    fi
-
-    # --base-port: 1024..65535, and the whole range must fit.
-    if ! [[ "$BASE_PORT" =~ ^[0-9]+$ ]]; then
-        echo "✗ --base-port must be an integer" >&2
-        echo "  Got: $BASE_PORT" >&2
-        exit 1
-    fi
-    local last_port=$(( BASE_PORT + AGENTS - 1 ))
-    if (( BASE_PORT < 1024 || last_port > 65535 )); then
-        echo "✗ --base-port range must fit in 1024..65535" >&2
-        echo "  Got range: $BASE_PORT..$last_port" >&2
-        exit 1
-    fi
-
-    # Boolean flags.
-    if [[ "$RESTORE" != "true" && "$RESTORE" != "false" ]]; then
-        echo "✗ --restore must be 'true' or 'false'" >&2
-        echo "  Got: $RESTORE" >&2
-        exit 1
-    fi
-    if [[ "$SNAPSHOT" != "true" && "$SNAPSHOT" != "false" ]]; then
-        echo "✗ --snapshot must be 'true' or 'false'" >&2
-        echo "  Got: $SNAPSHOT" >&2
-        exit 1
-    fi
-    if [[ "$RAG" != "true" && "$RAG" != "false" ]]; then
-        echo "✗ --rag must be 'true' or 'false'" >&2
-        echo "  Got: $RAG" >&2
-        exit 1
-    fi
-}
-
-validate_args
-
-# --------------------------------------------------------------------
 # sanity checks
 # --------------------------------------------------------------------
 
 API_STATE="$API_ROOT/state.json"
-if [[ ! -f "$API_STATE" ]]; then
-    echo "✗ No $API_STATE found." >&2
+
+# In stateless mode we need state.json as the source of cookies.
+# In CDP mode the Chrome profile is the source; state.json is
+# irrelevant, so we do not require it.
+if [[ -z "$CDP_URL" ]] && [[ ! -f "$API_STATE" ]]; then
+    echo "✗ No $API_STATE found (required in stateless mode)." >&2
     echo "  Start the API once and log in:" >&2
     echo "      cd $API_ROOT && npm start" >&2
     echo "  Then Ctrl+C and re-run this script." >&2
+    echo "  Or use --cdp-url URL to generate a CDP deployment instead." >&2
     exit 1
+fi
+
+# In CDP mode, check that Chrome is already running. Not fatal:
+# agents will retry the connection on start, and Chrome may be
+# launched by the caller (e.g. Pingis) between generation and start.
+if [[ -n "$CDP_URL" ]]; then
+    if ! curl -sf "$CDP_URL/json/version" > /dev/null 2>&1; then
+        echo "⚠️  CDP_URL=$CDP_URL is not responding right now." >&2
+        echo "  Chrome must be running when the agents start. Start it with:" >&2
+        echo "      google-chrome-stable \\" >&2
+        echo "          --remote-debugging-port=9222 \\" >&2
+        echo "          --remote-allow-origins='*' \\" >&2
+        echo "          --user-data-dir=\$HOME/.config/google-chrome-cdp &" >&2
+        echo "  Continuing anyway — deployment files will be generated." >&2
+        echo "" >&2
+    fi
 fi
 
 if [[ ! -d "$TEMPLATES" ]]; then
@@ -204,7 +175,19 @@ if $UPDATE_STATE; then
         echo "  Build the deployment first (without --update-state)." >&2
         exit 1
     fi
-
+    if [[ -f "$AGENT_ROOT/agents/agent-1/agent.env" ]] \
+       && grep -q '^DEEPSEEK_CDP_URL=' "$AGENT_ROOT/agents/agent-1/agent.env"; then
+        echo "ℹ️  This is a CDP deployment; there is no shared-state.json to refresh."
+        echo "  Cookies live in the Chrome profile. Update them by logging"
+        echo "  in to chat.deepseek.com in the running Chrome, or by restarting"
+        echo "  Chrome with a fresh profile copy (delete the profile dir first)."
+        exit 0
+    fi
+    if [[ ! -f "$API_STATE" ]]; then
+        echo "✗ No $API_STATE found." >&2
+        echo "  Start the API once and log in, then re-run --update-state." >&2
+        exit 1
+    fi
     cp "$API_STATE" "$AGENT_ROOT/shared-state.json"
     chmod 600 "$AGENT_ROOT/shared-state.json"
     echo "✓ Refreshed $AGENT_ROOT/shared-state.json"
@@ -228,8 +211,13 @@ fi
 
 mkdir -p "$AGENT_ROOT/scripts/lib" "$AGENT_ROOT/agents"
 
-cp "$API_STATE" "$AGENT_ROOT/shared-state.json"
-chmod 600 "$AGENT_ROOT/shared-state.json"
+# Copy shared state (stateless mode only).
+if [[ -z "$CDP_URL" ]]; then
+    cp "$API_STATE" "$AGENT_ROOT/shared-state.json"
+    chmod 600 "$AGENT_ROOT/shared-state.json"
+else
+    echo "ℹ️  CDP mode: shared-state.json not copied (Chrome profile is the source of cookies)"
+fi
 
 echo "$API_ROOT" > "$AGENT_ROOT/api-path.txt"
 
@@ -246,10 +234,6 @@ cp "$TEMPLATES/.gitignore" "$AGENT_ROOT/.gitignore"
 # generate one directory per agent
 # --------------------------------------------------------------------
 
-# Build three parallel representations of the per-agent data:
-#   - the agent directories on disk
-#   - KEY_TABLE: markdown rows for the README
-#   - STDOUT_TABLE: aligned plain text for the terminal summary
 KEY_TABLE=""
 STDOUT_TABLE=""
 
@@ -267,12 +251,39 @@ for i in $(seq 1 "$AGENTS"); do
     agent_dir="$AGENT_ROOT/agents/$name"
     mkdir -p "$agent_dir"
 
-    cat > "$agent_dir/agent.env" <<EOF
-# $name — generated by make-multi-agent.sh
+    if [[ -n "$CDP_URL" ]]; then
+        cat > "$agent_dir/agent.env" <<EOF
+# $name — generated by make-multi-agent.sh (CDP mode)
 #
-# Paths are relative to this directory. The server is started from
-# here, so ./\${VAR} resolves to per-agent data and ../../shared-state.json
-# resolves to the shared cookie session.
+# This agent connects to a running Chrome via CDP instead of
+# launching its own browser. The Chrome profile carries the
+# DeepSeek session — no login, no captcha.
+#
+# Chrome must be running before start-all.sh. In Pingis, the
+# extension handles Chrome startup itself.
+
+PORT=$port
+
+DEEPSEEK_CDP_URL=$CDP_URL
+DEEPSEEK_AGENT_NAME=$name
+
+# Per-agent isolated state.
+DEEPSEEK_CHAT_STATE_PATH=./chat_state.json
+DEEPSEEK_API_KEY_PATH=./.api-key
+DEEPSEEK_UPLOAD_DIR=./uploads
+RAG_DATA_DIR=./rag_data
+
+# Feature flags.
+ENABLE_RESTORE=$RESTORE
+ENABLE_SNAPSHOT=$SNAPSHOT
+ENABLE_RAG=$RAG
+EOF
+    else
+        cat > "$agent_dir/agent.env" <<EOF
+# $name — generated by make-multi-agent.sh (stateless mode)
+#
+# This agent launches its own browser and restores cookies from
+# the shared state file at ../../shared-state.json.
 
 PORT=$port
 
@@ -291,6 +302,7 @@ ENABLE_RESTORE=$RESTORE
 ENABLE_SNAPSHOT=$SNAPSHOT
 ENABLE_RAG=$RAG
 EOF
+    fi
 
     echo "$key" > "$agent_dir/.api-key"
     chmod 600 "$agent_dir/.api-key"
@@ -300,20 +312,25 @@ EOF
 done
 
 # --------------------------------------------------------------------
-# generate README.md — deployment-specific only
+# generate README.md
 # --------------------------------------------------------------------
-#
-# This README is intentionally short. It contains only what is
-# unique to this deployment: the agent names, ports, and API keys.
-# Everything else (registration, captcha, RAG, troubleshooting) lives
-# in the API repository documentation, which is referenced below.
 
 GENERATED_AT="$(date -u '+%Y-%m-%d %H:%M UTC')"
+
+if [[ -n "$CDP_URL" ]]; then
+    MODE_LINE="CDP mode — agents connect to Chrome at \`$CDP_URL\`"
+    START_HINT="./scripts/start-all.sh (Chrome must be running first)"
+else
+    MODE_LINE="Stateless mode — each agent launches its own browser"
+    START_HINT="./scripts/start-all.sh"
+fi
 
 cat > "$AGENT_ROOT/README.md" <<EOF
 # DeepSeek agents
 
-Generated on $GENERATED_AT. $AGENTS agents sharing one DeepSeek session.
+Generated on $GENERATED_AT. $AGENTS agents.
+
+Mode: $MODE_LINE.
 
 ## Agents
 
@@ -334,6 +351,45 @@ $KEY_TABLE
       -H "Content-Type: application/json" \\
       -d '{"messages":[{"role":"user","content":"Hello"}]}'
 
+EOF
+
+if [[ -n "$CDP_URL" ]]; then
+    cat >> "$AGENT_ROOT/README.md" <<EOF
+## CDP mode
+
+These agents connect to a Chrome instance at \`$CDP_URL\` via the
+Chrome DevTools Protocol. Chrome must be running before
+\`./scripts/start-all.sh\`:
+
+    google-chrome-stable \\
+        --remote-debugging-port=9222 \\
+        --remote-allow-origins='*' \\
+        --user-data-dir=\$HOME/.config/google-chrome-cdp &
+
+In Pingis, the VS Code extension starts Chrome itself; you do not
+need to run the command above manually.
+
+Each agent creates its own tab in that Chrome. Tabs are isolated:
+different chat, different uploads directory, different RAG index.
+The Chrome profile carries the DeepSeek session — no login, no
+captcha.
+
+On stop (\`./scripts/stop-all.sh\`), each agent closes its own tab
+but leaves Chrome running. This is intentional: the next start
+of any agent reuses its tab by lastChatId, and other agents keep
+working.
+
+If cookies expire: log in to chat.deepseek.com in the running
+Chrome. No file copies are needed — the Chrome profile is the
+source of truth.
+
+## Full documentation
+
+    $API_ROOT/README.md
+    $API_ROOT/docs/guides/building-applications.md
+EOF
+else
+    cat >> "$AGENT_ROOT/README.md" <<EOF
 ## If the cookies expire
 
 Symptoms: \`Performing auto-login\` or \`Chat page did not load\` in
@@ -359,6 +415,7 @@ etc.), see the registration recipes in the API documentation:
     $API_ROOT/README.md
     $API_ROOT/docs/guides/building-applications.md
 EOF
+fi
 
 # --------------------------------------------------------------------
 # done
@@ -366,11 +423,19 @@ EOF
 
 echo ""
 echo "✓ Generated $AGENT_ROOT"
+echo "  Mode:    $([[ -n "$CDP_URL" ]] && echo "CDP ($CDP_URL)" || echo "stateless")"
 echo "  Agents:  $AGENTS"
 echo "  Ports:   $BASE_PORT..$(( BASE_PORT + AGENTS - 1 ))"
 echo ""
 echo "  Agent keys (also in README.md):"
 echo "$STDOUT_TABLE"
+if [[ -n "$CDP_URL" ]]; then
+    echo "⚠️  Start Chrome with CDP before running the agents:"
+    echo "    google-chrome-stable --remote-debugging-port=9222 \\"
+    echo "        --remote-allow-origins='*' \\"
+    echo "        --user-data-dir=\$HOME/.config/google-chrome-cdp &"
+    echo ""
+fi
 echo "Next:"
 echo "    cd $AGENT_ROOT"
 echo "    ./scripts/start-all.sh"
