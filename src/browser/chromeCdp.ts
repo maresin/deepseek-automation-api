@@ -71,7 +71,7 @@ export function getCdpConfig(): CdpConfig {
             : path.join(os.homedir(), '.config', 'google-chrome-cdp'),
         chromePath: process.env.DEEPSEEK_CHROME_PATH || 'google-chrome-stable',
         autolaunch: process.env.DEEPSEEK_CDP_AUTOLAUNCH !== 'false',
-        autoclose: process.env.DEEPSEEK_CDP_AUTOCLOSE === 'false',
+        autoclose: process.env.DEEPSEEK_CDP_AUTOCLOSE !== 'false',
         copyFromDefault: process.env.DEEPSEEK_CDP_COPY_DEFAULT_PROFILE !== 'false',
         extraArgs: (process.env.DEEPSEEK_CHROME_EXTRA_ARGS || '')
             .split(/\s+/).filter(Boolean),
@@ -228,10 +228,17 @@ export async function ensureChromeCdp(): Promise<boolean> {
 
     if (await isCdpResponding(cdpUrl)) {
         console.log(`✓ Chrome CDP already running at ${cdpUrl}`);
-        // If WE started a previous Chrome but something else answers
-        // now, leave launchedChromePid alone — it may have died and
-        // been superseded by a user-started Chrome.
         return true;
+    }
+
+    // Port is bound but /json/version does not answer. That is a
+    // zombie Chrome — crashed or hung while still owning the socket.
+    // Kill it before we try to spawn a fresh one, otherwise spawn
+    // fails with EADDRINUSE.
+    const { findPidsOnPort, killZombieChrome } = await import('../utils/processCleanup.js');
+    if (findPidsOnPort(config.port).length > 0) {
+        console.log(`🧹 Port ${config.port} is bound but CDP is not responding; killing zombie`);
+        await killZombieChrome(config.port);
     }
 
     if (!config.autolaunch) {

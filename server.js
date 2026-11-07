@@ -398,6 +398,16 @@ if (process.env.ENABLE_RAG === 'true') {
     console.log('✅ RAG module enabled');
 }
 
+// Kill orphaned instances of THIS server before binding. Only
+// processes whose DEEPSEEK_API_KEY_PATH matches ours are eligible,
+// so two agents (or two unrelated APIs) never kill each other.
+const { killOrphanedServerSync } = require('./dist/utils/processCleanup.js');
+const orphanCheck = killOrphanedServerSync(PORT);
+if (!orphanCheck.ok) {
+    console.error(`✗ ${orphanCheck.reason}`);
+    process.exit(1);
+}
+
 // Bind the port first. If it is already in use, exit immediately —
 // before validateEnvironment() spawns a Chromium instance that would
 // be wasted (login, selector check) on a process that is about to die.
