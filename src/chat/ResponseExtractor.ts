@@ -87,50 +87,37 @@ export class ResponseExtractor {
      *
      * @returns true if the placeholder is present in the DOM.
      */
+    /**
+     * Detect the busy/failed state by the presence of the retry icon.
+     *
+     * The retry icon (SVG path prefix) is the stable signature of a
+     * failed request: "something failed, click to retry". DeepSeek
+     * changes the accompanying label without notice — observed so far:
+     *   - "Server busy, please try again later."
+     *   - "Messages too frequent. Try again later."
+     *   - "Validation failed"
+     * The retry icon has been the same across all variants.
+     *
+     * Icon-only detection means no maintenance when a new wording
+     * appears. The scan is global (whole page), not scoped to message
+     * blocks: "Validation failed" appears in the input area, not in
+     * a rendered assistant message, and would be missed by a
+     * block-scoped scan.
+     */
     async detectServerBusy(): Promise<boolean> {
         const page = this.browserManager.page!;
         return await page.evaluate((cfg) => {
-            const blocks = document.querySelectorAll('[data-virtual-list-item-key]');
-            const pattern = new RegExp(cfg.patternSource, 'i');
-
-            for (const block of Array.from(blocks)) {
-                // Primary: retry icon. Present in both wordings.
-                const paths = block.querySelectorAll('svg path');
-                for (const p of Array.from(paths)) {
-                    const d = p.getAttribute('d') || '';
-                    if (d.startsWith(cfg.retryPath)) return true;
-                }
-                // Fallback: text. Check the whole block, not spans.
-                const text = block.textContent || '';
-                if (pattern.test(text)) return true;
+            const allPaths = document.querySelectorAll('svg path');
+            for (const p of Array.from(allPaths)) {
+                const d = p.getAttribute('d') || '';
+                if (d.startsWith(cfg.retryPath)) return true;
             }
             return false;
         }, {
             retryPath: Selectors.retryButtonPathPrefix,
-            patternSource: Selectors.serverBusyPattern.source,
         });
     }
 
-    /**
-     * Check whether generation was interrupted during the thinking
-     * phase of the given assistant message.
-     *
-     * DeepSeek normally shows a thinking panel with "Thought for N
-     * seconds". When generation is interrupted, the panel is replaced
-     * by "Stopped" instead, and the answer that follows is partial or
-     * empty. The reliable recovery is to click Regenerate.
-     *
-     * Detection is scoped to the assistant block. "Stopped" is
-     * matched as exact span text: the Stop button uses only an icon,
-     * so a span containing "Stopped" inside the assistant block is a
-     * strong signal.
-     *
-     * Returns true only when the marker is present. The absence of
-     * the marker (whether the panel is complete or missing entirely)
-     * is the normal case and needs no distinction.
-     *
-     * @param assistantKey - data-virtual-list-item-key of the message.
-     */
     async detectThinkingStopped(assistantKey: number): Promise<boolean> {
         const page = this.browserManager.page!;
         return await page.evaluate((cfg) => {
