@@ -52,8 +52,13 @@ export class SendUserMessageTask extends Task<string> {
             return;
         }
 
-        console.log('🔧 Sending tools system prompt...');
-        const toolsPrompt = loadPrompt('tools_prompt.txt', { required: true });
+        const format = (process.env.DEEPSEEK_TOOL_FORMAT || 'auto').toLowerCase();
+        const promptFile = format === 'dsml'
+            ? 'tools_prompt_dsml.txt'
+            : 'tools_prompt.txt';
+
+        console.log(`🔧 Sending tools system prompt (format=${format}, file=${promptFile})...`);
+        const toolsPrompt = loadPrompt(promptFile, { required: true });
 
         const response = await client.executePipeline({
             text: toolsPrompt,

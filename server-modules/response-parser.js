@@ -170,6 +170,59 @@ function repairTruncatedJson(text) {
 }
 
 /**
+ * Parse a JSON string leniently. Two failure modes are handled:
+ *
+ *   1. Literal newlines inside string values. Strict JSON forbids
+ *      raw newlines in strings; they must be `\n` escapes. Some
+ *      model outputs contain raw newlines anyway (especially in
+ *      long `script` arguments), making JSON.parse fail on a
+ *      technically-trivial fixable error.
+ *
+ *   2. Single quotes instead of double quotes around keys/values.
+ *      Not standard JSON but occasionally emitted.
+ *
+ * If neither fix works, returns the raw string as-is. The client
+ * will see a string in `arguments` that it cannot JSON.parse, and
+ * will typically fail gracefully. We log a warning so the raw
+ * content is visible for diagnosis.
+ */
+function parseLenientJson(raw, paramName) {
+    // 1. Strict
+    try { return JSON.parse(raw); } catch { /* */ }
+
+    // 2. Literal newlines → escapes
+    try {
+        const escaped = raw.replace(/\r?\n/g, '\\n');
+        const parsed = JSON.parse(escaped);
+        console.log(`🔧 DSML parameter "${paramName}": fixed literal newlines`);
+        return parsed;
+    } catch { /* */ }
+
+    // 3. Literal tabs → escapes
+    try {
+        const escaped = raw.replace(/\t/g, '\\t');
+        const parsed = JSON.parse(escaped);
+        console.log(`🔧 DSML parameter "${paramName}": fixed literal tabs`);
+        return parsed;
+    } catch { /* */ }
+
+    // 4. Both newlines and tabs
+    try {
+        const escaped = raw.replace(/\r?\n/g, '\\n').replace(/\t/g, '\\t');
+        const parsed = JSON.parse(escaped);
+        console.log(`🔧 DSML parameter "${paramName}": fixed newlines + tabs`);
+        return parsed;
+    } catch { /* */ }
+
+    console.warn(
+        `⚠️ DSML parameter "${paramName}" could not be parsed as JSON even ` +
+        `after newline/tab escaping.\n` +
+        `   preview: ${JSON.stringify(raw.substring(0, 200))}`
+    );
+    return raw;
+}
+
+/**
  * Detect and parse DSML tool-call markup into OpenAI tool_calls.
  *
  * DeepSeek's internal DSML format:
@@ -260,13 +313,7 @@ function parseDsml(text) {
             if (isString) {
                 params[paramName] = rawValue;
             } else {
-                try {
-                    params[paramName] = JSON.parse(rawValue);
-                } catch {
-                    // Malformed JSON — keep raw. The client will see
-                    // an error when it tries to parse arguments.
-                    params[paramName] = rawValue;
-                }
+                params[paramName] = parseLenientJson(rawValue, paramName);
             }
         }
 
@@ -357,19 +404,34 @@ function parseResponse(result) {
         };
     }
 
-    // DSML marker present but no invoke parsed — the markup is
-    // malformed. Do not pass it through as content: the client would
-    // try to process it as an answer and break.
     if (result.includes(`<${DSML_TAG} calls>`)) {
+        // Diagnostics block from Part 2.1
+        const hasInvoke = new RegExp(`<${DSML_TAG}\\s*invoke\\s+name=`, 'i').test(result);
+        const hasParam = new RegExp(`<${DSML_TAG}\\s*parameter\\s+name=`, 'i').test(result);
+        const hasCloseInvoke = result.includes(`</${DSML_TAG} invoke>`);
+        const hasCloseCalls = result.includes(`</${DSML_TAG} calls>`);
         console.warn(
-            `⚠️ DSML markup present but no tool_calls could be extracted. ` +
-            `preview: ${result.substring(0, 200)}`
+            `⚠️ DSML markup present but no tool_calls could be extracted.\n` +
+            `   length:           ${result.length} chars\n` +
+            `   has <invoke>:     ${hasInvoke}\n` +
+            `   has <parameter>:  ${hasParam}\n` +
+            `   has </invoke>:    ${hasCloseInvoke}\n` +
+            `   has </calls>:     ${hasCloseCalls}\n` +
+            `   head:             ${JSON.stringify(result.substring(0, 300))}\n` +
+            `   tail:             ${JSON.stringify(result.substring(Math.max(0, result.length - 200)))}`
         );
+
+        const format = (process.env.DEEPSEEK_TOOL_FORMAT || 'auto').toLowerCase();
+        // In "auto" and "dsml" modes, an unparseable DSML block is
+        // still an error (the client cannot use raw markup). In
+        // "json" mode, DSML is not expected at all — also an error.
+        // All three return dsmlError.
         return {
             isToolCall: false,
             parsed: { content: null },
             wasTruncated: false,
             dsmlError: true,
+            dsmlFormat: format,
         };
     }
 

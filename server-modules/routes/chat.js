@@ -120,8 +120,15 @@ function validateMessages(messages) {
         if (!VALID_ROLES.has(msg.role)) {
             return `Invalid role: "${msg.role}". Must be one of: user, assistant, system`;
         }
-        if (typeof msg.content !== 'string' && !Array.isArray(msg.content)) {
-            return `Invalid content type for role "${msg.role}": must be string or array`;
+        // OpenAI spec: assistant messages that contain tool_calls must
+        // have content: null. Without this, a normal tool-call round-trip
+        // (assistant emits tool_calls → client sends back with result)
+        // fails at validation. Null is also accepted in general — the
+        // prompt builder treats it as empty string, which is safe.
+        if (msg.content !== null
+            && typeof msg.content !== 'string'
+            && !Array.isArray(msg.content)) {
+            return `Invalid content type for role "${msg.role}": must be string, array, or null`;
         }
     }
     return null;
@@ -587,8 +594,10 @@ async function handleChatRoute(req, res) {
             error: {
                 type: 'dsml_parse_error',
                 message:
-                    'The model attempted a tool call using internal DSML ' +
-                    'markup that could not be parsed. Retry the request.',
+                    'The model emitted tool calls in DSML markup that ' +
+                    'could not be parsed. Check the API log for the raw ' +
+                    'response preview and the DEEPSEEK_TOOL_FORMAT setting.',
+                format_requested: (process.env.DEEPSEEK_TOOL_FORMAT || 'auto'),
             },
         });
     }

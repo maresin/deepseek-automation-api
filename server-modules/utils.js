@@ -58,6 +58,26 @@ function bothFilesExist() {
 }
 
 /**
+ * Extract the text content from a message. Handles:
+ *   - string content (the common case)
+ *   - array content with {type: "text", text: "..."} parts
+ *   - null / undefined (returns empty string)
+ *
+ * Non-text parts (images, file references) are ignored here;
+ * attachments are handled separately by the file pipeline.
+ */
+function extractTextContent(content) {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+        return content
+            .filter(p => p && p.type === 'text' && typeof p.text === 'string')
+            .map(p => p.text)
+            .join('\n');
+    }
+    return '';
+}
+
+/**
  * Build the prompt text sent to DeepSeek from a messages array.
  *
  * Role prefixes (`System:`, `User:`, `Assistant:`) are added when the
@@ -85,16 +105,28 @@ function buildPrompt(messages, tools) {
         for (const msg of messages) {
             switch (msg.role) {
                 case 'system':
-                    conversationText += `System: ${msg.content}\n`;
+                    conversationText += `System: ${extractTextContent(msg.content)}\n`;
                     break;
                 case 'user':
-                    conversationText += `User: ${msg.content}\n`;
+                    conversationText += `User: ${extractTextContent(msg.content)}\n`;
                     break;
-                case 'assistant':
-                    conversationText += `Assistant: ${msg.content}\n`;
+                case 'assistant': {
+                    if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+                        // The assistant requested tool calls. Do NOT
+                        // emit "Assistant: null" — the model treats
+                        // that as an empty turn, gets confused, and
+                        // may emit new tool calls or hang.
+                        const names = msg.tool_calls
+                            .map(tc => tc.function?.name || 'unknown')
+                            .join(', ');
+                        conversationText += `Assistant: [tool calls: ${names}]\n`;
+                    } else {
+                        conversationText += `Assistant: ${extractTextContent(msg.content)}\n`;
+                    }
                     break;
+                }
                 default:
-                    conversationText += `${msg.role}: ${msg.content}\n`;
+                    conversationText += `${msg.role}: ${extractTextContent(msg.content)}\n`;
             }
         }
     }
