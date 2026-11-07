@@ -171,6 +171,27 @@ function findCookiesPath(profileDir: string): string | null {
  * Nothing else is copied: history, extensions, bookmarks stay in
  * the CDP profile as-is.
  */
+/**
+ * Quick check whether a SQLite file contains a given substring.
+ *
+ * Reading the whole file and searching is fine for Cookies: it is
+ * a few hundred KB at most. We avoid the sqlite3 dependency because
+ * Chrome may hold the file in WAL mode, and plain reads are more
+ * reliable than a live sqlite connection on a locked file.
+ *
+ * The check is imprecise (could match a cookie value that happens
+ * to contain the host name), but for our purpose — "is there any
+ * chance this file has a DeepSeek session" — it is accurate enough.
+ */
+function cookieFileContains(cookiesPath: string, needle: string): boolean {
+    try {
+        const buf = fs.readFileSync(cookiesPath);
+        return buf.includes(Buffer.from(needle, 'utf8'));
+    } catch {
+        return false;
+    }
+}
+
 function syncAuthFilesFromSource(targetProfileDir: string): void {
     const sourceProfile = path.join(os.homedir(), '.config', 'google-chrome');
     if (!fs.existsSync(sourceProfile)) return;
@@ -192,7 +213,20 @@ function syncAuthFilesFromSource(targetProfileDir: string): void {
     if (srcCookies && tgtCookies) {
         const srcMtime = fs.statSync(srcCookies).mtimeMs;
         const tgtMtime = fs.statSync(tgtCookies).mtimeMs;
-        if (srcMtime > tgtMtime) {
+        // Safety: never overwrite a live DeepSeek session with a
+        // stale source that has already lost it. In multi-agent
+        // deployments the user logs in to DeepSeek in the CDP
+        // profile; if ~/.config/google-chrome has an older Cookies
+        // file without ds_session_id, sync would erase the live
+        // session and force re-login in every tab.
+        const srcHasDs = cookieFileContains(srcCookies, 'ds_session_id');
+        const tgtHasDs = cookieFileContains(tgtCookies, 'ds_session_id');
+        if (tgtHasDs && !srcHasDs) {
+            console.log(
+                `→ Skipped Cookies sync: CDP profile has a live ` +
+                `DeepSeek session that source would erase`
+            );
+        } else if (srcMtime > tgtMtime) {
             fs.copyFileSync(srcCookies, tgtCookies);
             for (const suffix of ['-wal', '-shm']) {
                 const srcW = srcCookies + suffix;
@@ -222,7 +256,85 @@ function syncAuthFilesFromSource(targetProfileDir: string): void {
  * Idempotent: a second call after a successful first call is a no-op
  * (the launched PID is still alive and CDP is responding).
  */
+const LAUNCH_LOCK_PATH = path.join(os.tmpdir(), '.deepseek-cdp-launch.lock');
+
+/**
+ * Acquire an exclusive launch lock, waiting up to `timeoutMs`.
+ *
+ * Uses O_EXCL open, which is atomic on POSIX filesystems. Stale
+ * locks (age > 60s) are removed — normal launches take 1–3s and
+ * waitForCdp allows 20s; anything older is from a crashed process.
+ */
+async function acquireLaunchLock(timeoutMs: number = 30000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            const fd = fs.openSync(LAUNCH_LOCK_PATH, 'wx');
+            fs.writeSync(fd, String(process.pid));
+            fs.closeSync(fd);
+            return true;
+        } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code !== 'EEXIST') return false;
+
+            try {
+                const stat = fs.statSync(LAUNCH_LOCK_PATH);
+                if (Date.now() - stat.mtimeMs > 60000) {
+                    console.log('→ Removing stale launch lock (age > 60s)');
+                    try { fs.unlinkSync(LAUNCH_LOCK_PATH); } catch { /* */ }
+                    continue;
+                }
+            } catch { /* */ }
+
+            await new Promise(r => setTimeout(r, 100));
+        }
+    }
+    return false;
+}
+
+function releaseLaunchLock(): void {
+    try { fs.unlinkSync(LAUNCH_LOCK_PATH); } catch { /* */ }
+}
+
+/**
+ * Ensure a Chrome with CDP is reachable at the configured URL.
+ *
+ * Two agents starting at the same instant must not both launch
+ * Chrome: the second would attach to the first's profile lock as
+ * an extra window and open duplicate tabs on /sign_in. A file lock
+ * serialises launches; the first caller launches, the second waits
+ * and finds it running.
+ *
+ * Fast path: if Chrome already answers, no lock is taken — this
+ * covers the case where the user or a host extension (Pingis)
+ * started Chrome before the agents.
+ */
 export async function ensureChromeCdp(): Promise<boolean> {
+    const cdpUrl = getCdpUrl();
+
+    if (await isCdpResponding(cdpUrl)) {
+        console.log(`✓ Chrome CDP already running at ${cdpUrl}`);
+        return true;
+    }
+
+    const gotLock = await acquireLaunchLock();
+    if (!gotLock) {
+        console.error('✗ Could not acquire CDP launch lock within 30s');
+        return false;
+    }
+
+    try {
+        if (await isCdpResponding(cdpUrl)) {
+            console.log(`✓ Chrome CDP already running at ${cdpUrl} (after lock)`);
+            return true;
+        }
+        return await _ensureChromeCdpInner();
+    } finally {
+        releaseLaunchLock();
+    }
+}
+
+async function _ensureChromeCdpInner(): Promise<boolean> {
     const config = getCdpConfig();
     const cdpUrl = getCdpUrl();
 
